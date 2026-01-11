@@ -1,0 +1,78 @@
+# Manual test configuration for adda
+# Uses Azurite local emulator
+
+source:
+  # Azurite connection string
+  connection_string: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+  container_name: "test-diagnostics"
+  # Match all files (JSON, CSV, and TSV)
+  file_pattern: ".*\\.(json|csv|tsv)$"
+
+output:
+  directory: "./tmp/manual-test-output"
+  filename: "test-output.json"
+  max_size: 10  # MB
+  max_backups: 3
+  max_age: 1    # days
+  gzip: false
+
+parsers:
+  # NDJSON parser for .json files
+  - id: "ndjson"
+    type: "ndjson"
+    file_pattern: ".*\\.json$"
+
+  # External CSV parser (file mode)
+  - id: "csv-file"
+    type: "external"
+    file_pattern: ".*\\.csv$"
+    command: "bash"
+    args: ["./scripts/parsers/csv-to-json.sh"]
+
+  # External CSV parser (stdin/stdout mode) - for .tsv files as example
+  - id: "csv-stdio"
+    type: "external"
+    file_pattern: ".*\\.tsv$"
+    command: "bash"
+    args: ["./scripts/parsers/csv-to-json-stdio.sh"]
+    stdin: true
+    stdout: true
+
+enrichment_template: |
+  {
+    "_source": {
+      "blob": "{{ .Metadata.BlobName }}",
+      "container": "{{ .Metadata.ContainerName }}",
+      "storage_account": "{{ .Metadata.StorageAccount }}",
+      "processed_at": "{{ .Metadata.ProcessedAt.Format "2006-01-02T15:04:05Z07:00" }}",
+      "last_modified": "{{ .Metadata.LastModified.Format "2006-01-02T15:04:05Z07:00" }}",
+      "size": {{ .Metadata.Size }},
+      "content_type": "{{ .Metadata.ContentType }}",
+      "directory": "{{ .Metadata.Directory }}",
+      "filename": "{{ .Metadata.FileName }}",
+      "extension": "{{ .Metadata.Extension }}"
+    }
+  }
+
+metrics:
+  enabled: true
+  address: ":9091"  # Different port to avoid conflicts
+
+processing:
+  workers: 1
+  dry_run: false
+  delete_after_process: false  # Keep blobs for repeated testing
+  backoff_enabled: false
+  min_free_space_gb: 1
+  retry_attempts: 3
+  retry_delay: "1s"
+  temp_dir: "./tmp/adda-temp"
+  sort_order: "oldest"
+  batch_limit: 0
+  once_limit: 10
+  min_age: "0s"   # Minimum age before processing (0 = no minimum)
+  max_age: "0s"   # Maximum age for processing (0 = no maximum)
+
+logging:
+  level: "debug"
+  format: "text"

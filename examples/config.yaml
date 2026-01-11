@@ -1,0 +1,158 @@
+# Azure Diagnostic Data Reader - Example Configuration
+
+source:
+  # Azure Storage Account name (uses DefaultAzureCredential for auth)
+  storage_account_name: "mystorageaccount"
+  
+  # Alternatively, use a connection string (not recommended for production)
+  # connection_string: "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
+  
+  # Blob container name
+  container_name: "diagnostics"
+  
+  # Regex pattern to match blob names (optional)
+  file_pattern: ".*\\.json$"
+
+output:
+  # Directory for NDJSON output files
+  directory: "/var/log/adda"
+  
+  # Output filename
+  filename: "diagnostics.ndjson"
+  
+  # Max file size in MB before rotation
+  max_size: 100
+  
+  # Max number of backup files to keep
+  max_backups: 5
+  
+  # Max age in days for backup files
+  max_age: 30
+  
+  # Enable gzip compression for output (default: false)
+  # When enabled, padding is not applied to first writes
+  gzip: false
+
+parsers:
+  # Built-in NDJSON parser (default for .json files)
+  # NDJSON = Newline Delimited JSON, one JSON object per line
+  - id: "ndjson"
+    type: "ndjson"
+    file_pattern: ".*\\.json$"
+  
+  # JSON array parser (for files containing JSON arrays or single objects)
+  # - id: "json-array"
+  #   type: "json"
+  #   file_pattern: ".*\\.json-array$"
+
+  # Example: Parser for log files
+  # - id: "logs"
+  #   type: "ndjson"
+  #   file_pattern: "logs/.*\\.log$"
+  
+  # Example external parser for CSV files
+  # - id: "csv"
+  #   type: "external"
+  #   file_pattern: ".*\\.csv$"
+  #   command: "/usr/local/bin/csv-to-json"
+  #   args: ["--format", "json"]
+  #   env:
+  #     PARSER_CONFIG: "/etc/csv-parser.conf"
+  
+  # Catch-all parser (no file_pattern means matches all files)
+  # - id: "default"
+  #   type: "ndjson"
+
+# Go text/template for metadata enrichment
+# Available variables: .Record, .Metadata.BlobName, .Metadata.ContainerName, 
+#                      .Metadata.StorageAccount, .Metadata.ProcessedAt, .Metadata.Size,
+#                      .Metadata.ContentType, .Metadata.LastModified
+#
+# Hierarchical path fields (automatically parsed from BlobName):
+#   .Metadata.Directory  - Parent directory path (e.g., "logs/app/2026")
+#   .Metadata.FileName   - Base filename (e.g., "data.json")
+#   .Metadata.Extension  - File extension without dot (e.g., "json")
+#   .Metadata.PathParts  - Array of path components (e.g., ["logs", "app", "2026", "data.json"])
+#
+# Path helper functions:
+#   pathDir <path>         - Get directory portion of path
+#   pathBase <path>        - Get base filename
+#   pathExt <path>         - Get extension without dot
+#   pathSplit <path>       - Split path into array
+#   pathPart <parts> <i>   - Get specific path component by index
+#   pathJoin <parts>...    - Join path components
+enrichment_template: |
+  {
+    "_source": {
+      "blob": "{{ .Metadata.BlobName }}",
+      "container": "{{ .Metadata.ContainerName }}",
+      "storage_account": "{{ .Metadata.StorageAccount }}",
+      "processed_at": "{{ .Metadata.ProcessedAt.Format "2006-01-02T15:04:05Z07:00" }}",
+      "last_modified": "{{ .Metadata.LastModified.Format "2006-01-02T15:04:05Z07:00" }}",
+      "size": {{ .Metadata.Size }},
+      "directory": "{{ .Metadata.Directory }}",
+      "filename": "{{ .Metadata.FileName }}",
+      "extension": "{{ .Metadata.Extension }}"
+    }
+  }
+
+metrics:
+  # Enable Prometheus metrics endpoint
+  enabled: true
+  
+  # Metrics server address
+  address: ":9090"
+
+processing:
+  # Number of parallel workers
+  workers: 2
+  
+  # Dry run mode (don't modify anything)
+  dry_run: false
+  
+  # Delete blobs after successful processing
+  delete_after_process: true
+  
+  # Enable backoff based on free disk space
+  backoff_enabled: true
+  
+  # Minimum free space in GB before backing off
+  min_free_space_gb: 1
+  
+  # Retry attempts for failed operations
+  retry_attempts: 3
+  
+  # Delay between retries
+  retry_delay: "5s"
+  
+  # Temporary directory for external parsers (default: system temp)
+  # Each parsing operation creates a unique subdirectory
+  temp_dir: "/tmp/adda"
+
+  # Sort order for blob processing: "oldest" or "newest"
+  # - oldest: Process oldest blobs first (default, good for FIFO processing)
+  # - newest: Process newest blobs first (good for prioritizing recent data)
+  sort_order: "oldest"
+
+  # Maximum blobs to process per batch in continuous mode (0 = unlimited)
+  batch_limit: 0
+
+  # Maximum blobs to process in --once mode (default: 10)
+  once_limit: 10
+
+  # Minimum age of blobs to process (0 = no minimum)
+  # Useful to avoid processing files that are still being written
+  # Examples: 15s, 5m, 1h, 24h
+  min_age: "0s"
+
+  # Maximum age of blobs to process (0 = no maximum)
+  # Useful to skip very old files that have already been processed
+  # Examples: 24h, 7d, 30d (note: Go duration format, use "h" for hours)
+  max_age: "0s"
+
+logging:
+  # Log level: debug, info, warn, error
+  level: "info"
+  
+  # Log format: text, json
+  format: "json"
