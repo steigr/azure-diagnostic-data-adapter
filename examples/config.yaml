@@ -46,21 +46,22 @@ output:
   # e.g., diagnostics_abc12345.ndjson
   filename: "diagnostics.ndjson"
   
-  # Max file size in MB before rotation (0 = disabled, default)
-  # Set to e.g. 100 to enable rotation at 100MB
+  # Max file size in MiB before rotation (0 = disabled, default: 0)
   max_size: 0
 
-  # Max number of backup files to keep (0 = keep all, default)
-  # Only applies when max_size > 0
+  # Max number of backup files to keep (0 = keep all, default: 0)
   max_backups: 0
 
-  # Max age in days for backup files (0 = keep forever, default)
-  # Only applies when max_size > 0
+  # Max age in days for backup files (0 = keep forever, default: 0)
   max_age: 0
 
   # Enable gzip compression for output (default: false)
   # When enabled, padding is not applied to first writes
   gzip: false
+
+  # Delay before deleting output files (default: 1m, 0s = disabled)
+  # After this delay, the output file will be automatically deleted
+  delete_delay: 1m
 
 parsers:
   # Built-in NDJSON parser (default for .json files)

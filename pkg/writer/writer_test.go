@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestWriter_Write(t *testing.T) {
@@ -594,5 +595,138 @@ func TestMultiWriter_SameSourceSameFile(t *testing.T) {
 	}
 	if lines != 3 {
 		t.Errorf("File has %d lines, want 3", lines)
+	}
+}
+
+func TestMultiWriter_DeleteDelay(t *testing.T) {
+	dir := t.TempDir()
+	baseFilename := filepath.Join(dir, "output.ndjson")
+
+	// Use a short delete delay for testing
+	mw := NewMultiWriter(Config{
+		Filename:    baseFilename,
+		DeleteDelay: 100 * time.Millisecond,
+	})
+	defer func() { _ = mw.Close() }()
+
+	source := SourceInfo{
+		BlobName:           "test.json",
+		ContainerName:      "container",
+		StorageAccountName: "account",
+	}
+
+	records := []map[string]any{{"test": true}}
+	if _, err := mw.WriteBatchWithSource(records, source); err != nil {
+		t.Fatalf("WriteBatchWithSource() error = %v", err)
+	}
+
+	// File should exist immediately
+	hash := GenerateSourceHash(source)
+	filename := filepath.Join(dir, "output_"+hash+".ndjson")
+
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		t.Fatalf("File should exist immediately after write")
+	}
+
+	// Should have 1 pending deletion
+	if mw.GetPendingDeletionCount() != 1 {
+		t.Errorf("GetPendingDeletionCount() = %d, want 1", mw.GetPendingDeletionCount())
+	}
+
+	// Wait for deletion
+	time.Sleep(200 * time.Millisecond)
+
+	// File should be deleted
+	if _, err := os.Stat(filename); !os.IsNotExist(err) {
+		t.Errorf("File should be deleted after delay")
+	}
+
+	// No more pending deletions
+	if mw.GetPendingDeletionCount() != 0 {
+		t.Errorf("GetPendingDeletionCount() = %d, want 0", mw.GetPendingDeletionCount())
+	}
+}
+
+func TestMultiWriter_DeleteDelayDisabled(t *testing.T) {
+	dir := t.TempDir()
+	baseFilename := filepath.Join(dir, "output.ndjson")
+
+	// DeleteDelay = 0 should disable deletion
+	mw := NewMultiWriter(Config{
+		Filename:    baseFilename,
+		DeleteDelay: 0,
+	})
+	defer func() { _ = mw.Close() }()
+
+	source := SourceInfo{
+		BlobName:           "test.json",
+		ContainerName:      "container",
+		StorageAccountName: "account",
+	}
+
+	records := []map[string]any{{"test": true}}
+	if _, err := mw.WriteBatchWithSource(records, source); err != nil {
+		t.Fatalf("WriteBatchWithSource() error = %v", err)
+	}
+
+	// No pending deletions when disabled
+	if mw.GetPendingDeletionCount() != 0 {
+		t.Errorf("GetPendingDeletionCount() = %d, want 0 when disabled", mw.GetPendingDeletionCount())
+	}
+
+	// File should still exist
+	hash := GenerateSourceHash(source)
+	filename := filepath.Join(dir, "output_"+hash+".ndjson")
+
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		t.Fatalf("File should exist")
+	}
+}
+
+func TestMultiWriter_DeleteDelayReset(t *testing.T) {
+	dir := t.TempDir()
+	baseFilename := filepath.Join(dir, "output.ndjson")
+
+	mw := NewMultiWriter(Config{
+		Filename:    baseFilename,
+		DeleteDelay: 150 * time.Millisecond,
+	})
+	defer func() { _ = mw.Close() }()
+
+	source := SourceInfo{
+		BlobName:           "test.json",
+		ContainerName:      "container",
+		StorageAccountName: "account",
+	}
+
+	// First write
+	records := []map[string]any{{"batch": 1}}
+	if _, err := mw.WriteBatchWithSource(records, source); err != nil {
+		t.Fatalf("WriteBatchWithSource() error = %v", err)
+	}
+
+	// Wait 100ms and write again - this should reset the timer
+	time.Sleep(100 * time.Millisecond)
+
+	records = []map[string]any{{"batch": 2}}
+	if _, err := mw.WriteBatchWithSource(records, source); err != nil {
+		t.Fatalf("WriteBatchWithSource() error = %v", err)
+	}
+
+	// File should still exist after 100ms (timer was reset)
+	time.Sleep(100 * time.Millisecond)
+
+	hash := GenerateSourceHash(source)
+	filename := filepath.Join(dir, "output_"+hash+".ndjson")
+
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		t.Errorf("File should still exist - timer should have been reset")
+	}
+
+	// Wait for deletion after reset
+	time.Sleep(100 * time.Millisecond)
+
+	if _, err := os.Stat(filename); !os.IsNotExist(err) {
+		t.Errorf("File should be deleted after delay from last write")
 	}
 }

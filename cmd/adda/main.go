@@ -47,10 +47,11 @@ func main() {
 	// Output flags
 	rootCmd.Flags().String("output-dir", ".", "Output directory for NDJSON files")
 	rootCmd.Flags().String("output-file", "output.ndjson", "Output filename")
-	rootCmd.Flags().Int("max-size", 0, "Max file size in MB before rotation (0 = disabled)")
+	rootCmd.Flags().Int("max-size", 0, "Max file size in MiB before rotation (0 = disabled)")
 	rootCmd.Flags().Int("max-backups", 0, "Max number of backup files to keep (0 = keep all)")
 	rootCmd.Flags().Int("max-age", 0, "Max age in days for backup files (0 = keep forever)")
 	rootCmd.Flags().Bool("gzip", false, "Enable gzip compression for output")
+	rootCmd.Flags().Duration("delete-delay", time.Minute, "Delay before deleting output files (0 = disabled)")
 
 	// Processing flags
 	rootCmd.Flags().Int("workers", 1, "Number of parallel workers")
@@ -86,6 +87,7 @@ func main() {
 	_ = viper.BindPFlag("output.max_backups", rootCmd.Flags().Lookup("max-backups"))
 	_ = viper.BindPFlag("output.max_age", rootCmd.Flags().Lookup("max-age"))
 	_ = viper.BindPFlag("output.gzip", rootCmd.Flags().Lookup("gzip"))
+	_ = viper.BindPFlag("output.delete_delay", rootCmd.Flags().Lookup("delete-delay"))
 	_ = viper.BindPFlag("processing.workers", rootCmd.Flags().Lookup("workers"))
 	_ = viper.BindPFlag("processing.dry_run", rootCmd.Flags().Lookup("dry-run"))
 	_ = viper.BindPFlag("processing.delete_after_process", rootCmd.Flags().Lookup("delete-after-process"))

@@ -80,12 +80,13 @@ func (c *Config) GetAggregatedSources() []AggregatedSource {
 
 // OutputConfig holds output file configuration.
 type OutputConfig struct {
-	Directory  string `mapstructure:"directory"`
-	Filename   string `mapstructure:"filename"`
-	MaxSize    int    `mapstructure:"max_size"` // MB
-	MaxBackups int    `mapstructure:"max_backups"`
-	MaxAge     int    `mapstructure:"max_age"` // days
-	Gzip       bool   `mapstructure:"gzip"`    // Enable gzip compression
+	Directory   string        `mapstructure:"directory"`
+	Filename    string        `mapstructure:"filename"`
+	MaxSize     int           `mapstructure:"max_size"`     // MB (0 = disabled)
+	MaxBackups  int           `mapstructure:"max_backups"`  // (0 = keep all)
+	MaxAge      int           `mapstructure:"max_age"`      // days (0 = keep forever)
+	Gzip        bool          `mapstructure:"gzip"`         // Enable gzip compression
+	DeleteDelay time.Duration `mapstructure:"delete_delay"` // Delay before deleting output files (0 = disabled)
 }
 
 // MetricsConfig holds Prometheus metrics configuration.
@@ -223,13 +224,14 @@ func Load(configPath string) (*Config, error) {
 
 // setDefaults sets default configuration values.
 func setDefaults(v *viper.Viper) {
-	// Output defaults - rotation disabled by default (0 = disabled)
+	// Output defaults - rotation disabled by default
 	v.SetDefault("output.directory", ".")
 	v.SetDefault("output.filename", "output.ndjson")
-	v.SetDefault("output.max_size", 0)    // 0 = no size-based rotation (disabled by default)
+	v.SetDefault("output.max_size", 0)    // 0 = no size-based rotation (disabled)
 	v.SetDefault("output.max_backups", 0) // 0 = keep all old files
 	v.SetDefault("output.max_age", 0)     // 0 = don't remove old files based on age
 	v.SetDefault("output.gzip", false)
+	v.SetDefault("output.delete_delay", "1m") // Delete output files after 1 minute (0s = disabled)
 
 	// Metrics defaults
 	v.SetDefault("metrics.enabled", true)
@@ -374,11 +376,12 @@ func (c *Config) Validate() error {
 func (c *Config) GetWriterConfig() writer.Config {
 	filename := filepath.Join(c.Output.Directory, c.Output.Filename)
 	return writer.Config{
-		Filename:   filename,
-		MaxSize:    c.Output.MaxSize,
-		MaxBackups: c.Output.MaxBackups,
-		MaxAge:     c.Output.MaxAge,
-		Gzip:       c.Output.Gzip,
+		Filename:    filename,
+		MaxSize:     c.Output.MaxSize,
+		MaxBackups:  c.Output.MaxBackups,
+		MaxAge:      c.Output.MaxAge,
+		Gzip:        c.Output.Gzip,
+		DeleteDelay: c.Output.DeleteDelay,
 	}
 }
 

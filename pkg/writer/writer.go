@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -45,6 +46,8 @@ type Config struct {
 	MaxAge int `mapstructure:"max_age"`
 	// Gzip enables gzip compression for output.
 	Gzip bool `mapstructure:"gzip"`
+	// DeleteDelay is the delay before deleting output files (0 = disabled).
+	DeleteDelay time.Duration `mapstructure:"delete_delay"`
 }
 
 // New creates a new Writer with the given configuration.
@@ -210,20 +213,29 @@ type SourceInfo struct {
 	StorageAccountName string
 }
 
+// pendingDeletion tracks a file scheduled for deletion.
+type pendingDeletion struct {
+	filename string
+	deleteAt time.Time
+	timer    *time.Timer
+}
+
 // MultiWriter manages multiple output files based on source hash.
 // Each unique combination of blob name, container name, and storage account name
 // gets its own output file with a hash suffix.
 type MultiWriter struct {
-	baseConfig Config
-	writers    map[string]*Writer
-	mu         sync.RWMutex
+	baseConfig       Config
+	writers          map[string]*Writer
+	pendingDeletions map[string]*pendingDeletion
+	mu               sync.RWMutex
 }
 
 // NewMultiWriter creates a new MultiWriter with the given base configuration.
 func NewMultiWriter(cfg Config) *MultiWriter {
 	return &MultiWriter{
-		baseConfig: cfg,
-		writers:    make(map[string]*Writer),
+		baseConfig:       cfg,
+		writers:          make(map[string]*Writer),
+		pendingDeletions: make(map[string]*pendingDeletion),
 	}
 }
 
@@ -289,7 +301,12 @@ func (m *MultiWriter) WriteWithSource(record map[string]any, info SourceInfo) er
 	if err != nil {
 		return err
 	}
-	return w.Write(record)
+	if err := w.Write(record); err != nil {
+		return err
+	}
+	// Schedule deletion if configured
+	m.scheduleDelete(info)
+	return nil
 }
 
 // WriteBatchWithSource writes multiple records to the appropriate file based on source info.
@@ -298,7 +315,63 @@ func (m *MultiWriter) WriteBatchWithSource(records []map[string]any, info Source
 	if err != nil {
 		return 0, err
 	}
-	return w.WriteBatch(records)
+	written, err := w.WriteBatch(records)
+	if err != nil {
+		return written, err
+	}
+	// Schedule deletion if configured
+	m.scheduleDelete(info)
+	return written, nil
+}
+
+// scheduleDelete schedules a file for deletion after the configured delay.
+// If a deletion is already pending for this file, it resets the timer.
+func (m *MultiWriter) scheduleDelete(info SourceInfo) {
+	if m.baseConfig.DeleteDelay <= 0 {
+		return
+	}
+
+	hash := GenerateSourceHash(info)
+	filename := m.generateFilename(hash)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Cancel existing timer if any
+	if pending, exists := m.pendingDeletions[hash]; exists {
+		pending.timer.Stop()
+	}
+
+	// Schedule new deletion
+	deleteAt := time.Now().Add(m.baseConfig.DeleteDelay)
+	timer := time.AfterFunc(m.baseConfig.DeleteDelay, func() {
+		m.executeDelete(hash, filename)
+	})
+
+	m.pendingDeletions[hash] = &pendingDeletion{
+		filename: filename,
+		deleteAt: deleteAt,
+		timer:    timer,
+	}
+}
+
+// executeDelete performs the actual file deletion.
+func (m *MultiWriter) executeDelete(hash, filename string) {
+	m.mu.Lock()
+
+	// Close and remove the writer first
+	if w, exists := m.writers[hash]; exists {
+		_ = w.Close()
+		delete(m.writers, hash)
+	}
+
+	// Remove from pending deletions
+	delete(m.pendingDeletions, hash)
+
+	m.mu.Unlock()
+
+	// Delete the file
+	_ = os.Remove(filename)
 }
 
 // Write writes a single record (uses default writer - for backwards compatibility).
@@ -339,10 +412,16 @@ func (m *MultiWriter) Rotate() error {
 	return lastErr
 }
 
-// Close closes all writers.
+// Close closes all writers and cancels pending deletions.
 func (m *MultiWriter) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Cancel all pending deletions
+	for hash, pending := range m.pendingDeletions {
+		pending.timer.Stop()
+		delete(m.pendingDeletions, hash)
+	}
 
 	var lastErr error
 	for hash, w := range m.writers {
@@ -359,6 +438,13 @@ func (m *MultiWriter) GetWriterCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.writers)
+}
+
+// GetPendingDeletionCount returns the number of files pending deletion.
+func (m *MultiWriter) GetPendingDeletionCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.pendingDeletions)
 }
 
 // Ensure MultiWriter implements WriterInterface
