@@ -14,6 +14,10 @@ LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIM
 # Debug build flags (includes debug info)
 LDFLAGS_DEBUG=-ldflags "-X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIME) -X main.gitCommit=$(GIT_COMMIT)"
 
+# Container settings
+CONTAINER_TOOL?=docker
+IMAGE_NAME?=$(BINARY_NAME)
+
 # Azurite settings
 AZURITE_DATA_DIR?=/tmp/azurite
 AZURITE_PID_FILE?=/tmp/azurite.pid
@@ -173,11 +177,11 @@ run-dry: build ## Run in dry-run mode
 
 docker: ## Build Docker image
 	@echo "Building Docker image..."
-	docker build -t $(BINARY_NAME):$(VERSION) .
+	$(CONTAINER_TOOL) buildx build -t $(IMAGE_NAME):$(VERSION) --load .
 
 docker-push: docker ## Push Docker image
 	@echo "Pushing Docker image..."
-	docker push $(BINARY_NAME):$(VERSION)
+	$(CONTAINER_TOOL) push $(IMAGE_NAME):$(VERSION)
 
 deps: ## Download dependencies
 	@echo "Downloading dependencies..."

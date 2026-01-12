@@ -1,10 +1,7 @@
 # Build stage
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25.5 AS builder
 
 WORKDIR /app
-
-# Install git for go mod download
-RUN apk add --no-cache git
 
 # Copy go mod files
 COPY go.mod go.sum ./
@@ -18,11 +15,11 @@ COPY . .
 # Build the binary
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags "-X main.version=${VERSION}" \
+    -ldflags "-s -w -X main.version=${VERSION}" \
     -o /app/bin/adda ./cmd/adda
 
 # Runtime stage
-FROM alpine:3.19
+FROM alpine:3.23.2
 
 # Install ca-certificates for HTTPS
 RUN apk add --no-cache ca-certificates tzdata
