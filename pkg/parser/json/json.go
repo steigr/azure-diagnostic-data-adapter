@@ -68,3 +68,9 @@ func (p *Parser) Parse(input io.Reader) ([]map[string]any, error) {
 	// If neither works, return error
 	return nil, fmt.Errorf("failed to parse JSON: input is neither a JSON array nor a JSON object")
 }
+
+// ParseWithContext reads JSON data with additional context and returns parsed records.
+// This is an alias for Parse as the JSON parser does not use context.
+func (p *Parser) ParseWithContext(input io.Reader, _ parser.ParseContext) ([]map[string]any, error) {
+	return p.Parse(input)
+}

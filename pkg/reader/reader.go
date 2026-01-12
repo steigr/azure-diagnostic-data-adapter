@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -36,10 +37,11 @@ type BlobInfo struct {
 
 // Reader provides methods to interact with Azure Blob Storage.
 type Reader struct {
-	client        *azblob.Client
-	containerName string
-	pattern       *regexp.Regexp
-	logger        *slog.Logger
+	client             *azblob.Client
+	storageAccountName string
+	containerName      string
+	pattern            *regexp.Regexp
+	logger             *slog.Logger
 }
 
 // Config holds the configuration for the blob reader.
@@ -71,10 +73,11 @@ func New(ctx context.Context, cfg Config) (*Reader, error) {
 	}
 
 	return &Reader{
-		client:        client,
-		containerName: cfg.ContainerName,
-		pattern:       pattern,
-		logger:        slog.Default(),
+		client:             client,
+		storageAccountName: cfg.StorageAccountName,
+		containerName:      cfg.ContainerName,
+		pattern:            pattern,
+		logger:             slog.Default(),
 	}, nil
 }
 
@@ -85,6 +88,9 @@ func NewWithConnectionString(connStr string, containerName string, filePattern s
 		return nil, fmt.Errorf("failed to create blob client from connection string: %w", err)
 	}
 
+	// Extract storage account name from connection string
+	storageAccountName := extractStorageAccountFromConnStr(connStr)
+
 	var pattern *regexp.Regexp
 	if filePattern != "" {
 		pattern, err = regexp.Compile(filePattern)
@@ -94,11 +100,23 @@ func NewWithConnectionString(connStr string, containerName string, filePattern s
 	}
 
 	return &Reader{
-		client:        client,
-		containerName: containerName,
-		pattern:       pattern,
-		logger:        slog.Default(),
+		client:             client,
+		storageAccountName: storageAccountName,
+		containerName:      containerName,
+		pattern:            pattern,
+		logger:             slog.Default(),
 	}, nil
+}
+
+// extractStorageAccountFromConnStr extracts the storage account name from a connection string.
+func extractStorageAccountFromConnStr(connStr string) string {
+	// Connection string format: AccountName=<name>;AccountKey=<key>;...
+	for _, part := range regexp.MustCompile(`;`).Split(connStr, -1) {
+		if strings.HasPrefix(part, "AccountName=") {
+			return strings.TrimPrefix(part, "AccountName=")
+		}
+	}
+	return ""
 }
 
 // SetLogger sets the logger for the reader.
@@ -236,4 +254,9 @@ func (r *Reader) Delete(ctx context.Context, blobName string) error {
 // GetContainerName returns the container name.
 func (r *Reader) GetContainerName() string {
 	return r.containerName
+}
+
+// GetStorageAccountName returns the storage account name.
+func (r *Reader) GetStorageAccountName() string {
+	return r.storageAccountName
 }

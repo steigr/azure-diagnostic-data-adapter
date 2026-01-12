@@ -60,6 +60,12 @@ func (p *Parser) Parse(input io.Reader) ([]map[string]any, error) {
 	return records, nil
 }
 
+// ParseWithContext reads NDJSON data with additional context and returns parsed records.
+// This is an alias for Parse as the NDJSON parser does not use context.
+func (p *Parser) ParseWithContext(input io.Reader, _ parser.ParseContext) ([]map[string]any, error) {
+	return p.Parse(input)
+}
+
 // parseNDJSON parses newline-delimited JSON.
 // Each line is expected to contain a single JSON object.
 // Lines that fail to parse are logged and skipped.

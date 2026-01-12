@@ -561,6 +561,7 @@ func (p *Processor) processParallel(ctx context.Context, blobs []blobWithReader)
 func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo, rdr *reader.Reader) error {
 	start := time.Now()
 	containerName := rdr.GetContainerName()
+	storageAccountName := rdr.GetStorageAccountName()
 	p.logger.Debug("processing blob", "container", containerName, "name", blob.Name, "size", blob.Size)
 
 	// Download blob
@@ -588,8 +589,19 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo, rdr *
 	p.metrics.SetActiveParsers(1)
 	defer p.metrics.SetActiveParsers(0)
 
-	// Parse data
-	records, err := psr.Parse(bytes.NewReader(buf))
+	// Get file match capture groups from parser
+	fileMatch := psr.MatchResult(blob.Name)
+
+	// Create parse context with storage information
+	parseCtx := parser.ParseContext{
+		BlobName:           blob.Name,
+		ContainerName:      containerName,
+		StorageAccountName: storageAccountName,
+		FileMatch:          fileMatch,
+	}
+
+	// Parse data with context
+	records, err := psr.ParseWithContext(bytes.NewReader(buf), parseCtx)
 	if err != nil {
 		return fmt.Errorf("failed to parse blob: %w", err)
 	}
@@ -599,14 +611,11 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo, rdr *
 		return nil
 	}
 
-	// Get file match capture groups from parser
-	fileMatch := psr.MatchResult(blob.Name)
-
 	// Enrich records with file match data
 	metadata := enricher.NewMetadataWithFileMatch(
 		blob.Name,
 		containerName,
-		p.cfg.Source.StorageAccountName,
+		storageAccountName,
 		time.Now(),
 		size,
 		blob.ContentType,

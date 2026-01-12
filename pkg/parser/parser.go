@@ -6,10 +6,27 @@ import (
 	"regexp"
 )
 
+// ParseContext provides additional context for parsing, including blob metadata
+// and storage information that can be used for enrichment or external processes.
+type ParseContext struct {
+	// BlobName is the name of the blob being parsed
+	BlobName string
+	// ContainerName is the name of the container the blob is in
+	ContainerName string
+	// StorageAccountName is the name of the storage account
+	StorageAccountName string
+	// FileMatch contains named capture groups from the file_pattern regex
+	FileMatch map[string]string
+}
+
 // Parser defines the interface for parsing blob data.
 type Parser interface {
 	// Parse reads data from the input and returns parsed records.
 	Parse(input io.Reader) ([]map[string]any, error)
+
+	// ParseWithContext reads data from the input with additional context and returns parsed records.
+	// Implementations should use this for external parsers that need storage information.
+	ParseWithContext(input io.Reader, ctx ParseContext) ([]map[string]any, error)
 
 	// ID returns the unique identifier for this parser.
 	ID() string
@@ -140,4 +157,12 @@ func (b *BaseParser) MatchResult(blobName string) map[string]string {
 	}
 
 	return result
+}
+
+// ParseWithContext is a default implementation that calls Parse without using context.
+// Subclasses that need context (like external parsers) should override this method.
+func (b *BaseParser) ParseWithContext(_ io.Reader, _ ParseContext) ([]map[string]any, error) {
+	// Default implementation ignores context and calls the simple Parse method.
+	// This should be overridden by parsers that need the context.
+	return nil, nil
 }

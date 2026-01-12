@@ -68,9 +68,16 @@ func New(cfg Config) (*Parser, error) {
 }
 
 // Parse runs the external command with input data and returns parsed records.
+// This is a convenience method that calls ParseWithContext with an empty context.
+func (p *Parser) Parse(input io.Reader) ([]map[string]any, error) {
+	return p.ParseWithContext(input, parser.ParseContext{})
+}
+
+// ParseWithContext runs the external command with input data and context, returning parsed records.
 // Depending on configuration, input/output can be via files or stdin/stdout.
 // The output is expected to be in NDJSON format (one JSON object per line).
-func (p *Parser) Parse(input io.Reader) ([]map[string]any, error) {
+// The context provides storage account and container name information as environment variables.
+func (p *Parser) ParseWithContext(input io.Reader, parseCtx parser.ParseContext) ([]map[string]any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
 	defer cancel()
 
@@ -83,9 +90,26 @@ func (p *Parser) Parse(input io.Reader) ([]map[string]any, error) {
 		_ = os.RemoveAll(tempDir)
 	}()
 
-	// Build environment
+	// Build base environment
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("TEMP_DIR=%s", tempDir))
+
+	// Add storage account and container name as environment variables
+	if parseCtx.StorageAccountName != "" {
+		env = append(env, fmt.Sprintf("STORAGE_ACCOUNT_NAME=%s", parseCtx.StorageAccountName))
+	}
+	if parseCtx.ContainerName != "" {
+		env = append(env, fmt.Sprintf("CONTAINER_NAME=%s", parseCtx.ContainerName))
+	}
+	if parseCtx.BlobName != "" {
+		env = append(env, fmt.Sprintf("BLOB_NAME=%s", parseCtx.BlobName))
+	}
+
+	// Add file match capture groups as environment variables with MATCH_ prefix
+	for name, value := range parseCtx.FileMatch {
+		envName := fmt.Sprintf("MATCH_%s", strings.ToUpper(name))
+		env = append(env, fmt.Sprintf("%s=%s", envName, value))
+	}
 
 	var inputPath, outputPath string
 
@@ -114,12 +138,44 @@ func (p *Parser) Parse(input io.Reader) ([]map[string]any, error) {
 		env = append(env, fmt.Sprintf("OUTPUT_FILE=%s", outputPath))
 	}
 
+	// Add user-defined environment variables with envsubst interpolation
 	for k, v := range p.env {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
+		// Perform environment variable interpolation on the value
+		interpolatedValue := envsubst(v, env)
+		env = append(env, fmt.Sprintf("%s=%s", k, interpolatedValue))
+	}
+
+	// Resolve command: first envsubst, then glob pattern expansion
+	command := envsubst(p.command, env)
+	resolvedCommand, err := resolveGlob(command)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve command glob pattern: %w", err)
+	}
+	if resolvedCommand != "" {
+		command = resolvedCommand
+	}
+
+	// Resolve args: first envsubst, then glob pattern expansion
+	var args []string
+	for _, arg := range p.args {
+		// First interpolate environment variables
+		interpolatedArg := envsubst(arg, env)
+		// Then try glob expansion
+		resolvedArg, err := resolveGlob(interpolatedArg)
+		if err != nil {
+			// If glob fails, use the interpolated arg
+			args = append(args, interpolatedArg)
+			continue
+		}
+		if resolvedArg != "" {
+			args = append(args, resolvedArg)
+		} else {
+			args = append(args, interpolatedArg)
+		}
 	}
 
 	// Run external command
-	cmd := exec.CommandContext(ctx, p.command, p.args...)
+	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Env = env
 
 	var outputBuf bytes.Buffer
@@ -134,9 +190,6 @@ func (p *Parser) Parse(input io.Reader) ([]map[string]any, error) {
 		cmd.Stderr = &stderrBuf
 	}
 
-	var err error
-	var combinedOutput []byte
-
 	if p.stdout {
 		err = cmd.Run()
 		if err != nil {
@@ -147,7 +200,7 @@ func (p *Parser) Parse(input io.Reader) ([]map[string]any, error) {
 			return nil, fmt.Errorf("external command failed: %w, stderr: %s", err, stderrStr)
 		}
 	} else {
-		combinedOutput, err = cmd.CombinedOutput()
+		combinedOutput, err := cmd.CombinedOutput()
 		if err != nil {
 			outputStr := strings.TrimSpace(string(combinedOutput))
 			if ctx.Err() == context.DeadlineExceeded {
@@ -177,6 +230,85 @@ func (p *Parser) Parse(input io.Reader) ([]map[string]any, error) {
 
 	// Parse NDJSON output (one JSON object per line)
 	return parseNDJSON(outputData)
+}
+
+// envsubst performs environment variable substitution similar to the envsubst command.
+// It replaces ${VAR} and $VAR patterns with their values from the provided environment.
+func envsubst(s string, env []string) string {
+	// Build environment map for lookup
+	envMap := make(map[string]string)
+	for _, e := range env {
+		if idx := strings.Index(e, "="); idx > 0 {
+			envMap[e[:idx]] = e[idx+1:]
+		}
+	}
+
+	result := s
+
+	// Replace ${VAR} patterns
+	for {
+		start := strings.Index(result, "${")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(result[start:], "}")
+		if end == -1 {
+			break
+		}
+		end += start
+
+		varName := result[start+2 : end]
+		varValue := envMap[varName]
+		result = result[:start] + varValue + result[end+1:]
+	}
+
+	// Replace $VAR patterns (without braces)
+	// Process from right to left to handle overlapping patterns correctly
+	words := strings.Fields(result)
+	for i, word := range words {
+		if strings.HasPrefix(word, "$") && !strings.HasPrefix(word, "${") {
+			varName := strings.TrimPrefix(word, "$")
+			// Remove any trailing non-alphanumeric characters
+			varEnd := 0
+			for j, c := range varName {
+				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+					varEnd = j + 1
+				} else {
+					break
+				}
+			}
+			if varEnd > 0 {
+				actualVarName := varName[:varEnd]
+				suffix := varName[varEnd:]
+				if val, ok := envMap[actualVarName]; ok {
+					words[i] = val + suffix
+				}
+			}
+		}
+	}
+
+	return strings.Join(words, " ")
+}
+
+// resolveGlob attempts to resolve a glob pattern to a single matching file.
+// Returns the first match if the pattern contains glob characters, otherwise returns empty string.
+func resolveGlob(pattern string) (string, error) {
+	// Check if pattern contains glob characters
+	if !strings.ContainsAny(pattern, "*?[") {
+		return "", nil
+	}
+
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return "", err
+	}
+
+	if len(matches) == 0 {
+		return "", nil
+	}
+
+	// Return the first match
+	return matches[0], nil
 }
 
 // parseNDJSON parses NDJSON formatted data (one JSON object per line).
