@@ -582,125 +582,131 @@ func TestConfig_Validate_MinFreeSpace(t *testing.T) {
 	}
 }
 
-func TestSourceConfig_GetContainerNames(t *testing.T) {
+func TestSourceConfig_IsEmpty(t *testing.T) {
 	tests := []struct {
-		name           string
-		containerName  string
-		containerNames []string
-		want           []string
+		name   string
+		config SourceConfig
+		want   bool
 	}{
 		{
-			name:           "single container_name",
-			containerName:  "container1",
-			containerNames: nil,
-			want:           []string{"container1"},
+			name:   "empty config",
+			config: SourceConfig{},
+			want:   true,
 		},
 		{
-			name:           "multiple container_names",
-			containerName:  "",
-			containerNames: []string{"container1", "container2", "container3"},
-			want:           []string{"container1", "container2", "container3"},
+			name: "only storage account",
+			config: SourceConfig{
+				StorageAccountName: "test",
+			},
+			want: false,
 		},
 		{
-			name:           "both singular and plural",
-			containerName:  "primary",
-			containerNames: []string{"secondary", "tertiary"},
-			want:           []string{"primary", "secondary", "tertiary"},
+			name: "only connection string",
+			config: SourceConfig{
+				ConnectionString: "test",
+			},
+			want: false,
 		},
 		{
-			name:           "duplicates are removed",
-			containerName:  "container1",
-			containerNames: []string{"container1", "container2"},
-			want:           []string{"container1", "container2"},
+			name: "only container name",
+			config: SourceConfig{
+				ContainerName: "test",
+			},
+			want: false,
 		},
 		{
-			name:           "empty strings are ignored",
-			containerName:  "container1",
-			containerNames: []string{"", "container2", ""},
-			want:           []string{"container1", "container2"},
-		},
-		{
-			name:           "all duplicates",
-			containerName:  "same",
-			containerNames: []string{"same", "same", "same"},
-			want:           []string{"same"},
-		},
-		{
-			name:           "no containers",
-			containerName:  "",
-			containerNames: nil,
-			want:           []string{},
-		},
-		{
-			name:           "only empty strings in plural",
-			containerName:  "",
-			containerNames: []string{"", "", ""},
-			want:           []string{},
+			name: "complete config",
+			config: SourceConfig{
+				StorageAccountName: "test",
+				ContainerName:      "container",
+				FilePattern:        ".*",
+			},
+			want: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := SourceConfig{
-				ContainerName:  tt.containerName,
-				ContainerNames: tt.containerNames,
-			}
-			got := cfg.GetContainerNames()
-			if len(got) != len(tt.want) {
-				t.Errorf("GetContainerNames() returned %d items, want %d", len(got), len(tt.want))
-				return
-			}
-			for i, name := range got {
-				if name != tt.want[i] {
-					t.Errorf("GetContainerNames()[%d] = %v, want %v", i, name, tt.want[i])
-				}
+			if got := tt.config.IsEmpty(); got != tt.want {
+				t.Errorf("IsEmpty() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestConfig_Validate_MultipleContainers(t *testing.T) {
+func TestConfig_CollectAndAggregateSources(t *testing.T) {
 	tests := []struct {
-		name           string
-		containerName  string
-		containerNames []string
-		wantErr        bool
+		name        string
+		source      SourceConfig
+		sources     []SourceConfig
+		wantErr     bool
+		wantSources int
 	}{
 		{
-			name:          "valid with singular",
-			containerName: "container1",
-			wantErr:       false,
+			name: "single source only",
+			source: SourceConfig{
+				StorageAccountName: "account1",
+				ContainerName:      "container1",
+			},
+			wantErr:     false,
+			wantSources: 1,
 		},
 		{
-			name:           "valid with plural",
-			containerNames: []string{"container1", "container2"},
-			wantErr:        false,
+			name: "sources list only",
+			sources: []SourceConfig{
+				{StorageAccountName: "account1", ContainerName: "container1"},
+				{StorageAccountName: "account2", ContainerName: "container2"},
+			},
+			wantErr:     false,
+			wantSources: 2,
 		},
 		{
-			name:           "valid with both",
-			containerName:  "primary",
-			containerNames: []string{"secondary"},
-			wantErr:        false,
+			name: "both source and sources",
+			source: SourceConfig{
+				StorageAccountName: "account1",
+				ContainerName:      "container1",
+			},
+			sources: []SourceConfig{
+				{StorageAccountName: "account2", ContainerName: "container2"},
+			},
+			wantErr:     false,
+			wantSources: 2,
 		},
 		{
-			name:    "invalid with neither",
+			name: "aggregation by storage account",
+			sources: []SourceConfig{
+				{StorageAccountName: "account1", ContainerName: "container1"},
+				{StorageAccountName: "account1", ContainerName: "container2"},
+				{StorageAccountName: "account2", ContainerName: "container3"},
+			},
+			wantErr:     false,
+			wantSources: 2, // Two unique storage accounts
+		},
+		{
+			name:    "no sources configured",
 			wantErr: true,
 		},
 		{
-			name:           "invalid with only empty strings",
-			containerNames: []string{"", ""},
-			wantErr:        true,
+			name: "source missing container",
+			source: SourceConfig{
+				StorageAccountName: "account1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "source missing storage account",
+			source: SourceConfig{
+				ContainerName: "container1",
+			},
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Config{
-				Source: SourceConfig{
-					StorageAccountName: "test",
-					ContainerName:      tt.containerName,
-					ContainerNames:     tt.containerNames,
-				},
+				Source:  tt.source,
+				Sources: tt.sources,
 				Output: OutputConfig{
 					Directory: ".",
 					Filename:  "output.ndjson",
@@ -712,7 +718,59 @@ func TestConfig_Validate_MultipleContainers(t *testing.T) {
 			err := cfg.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr {
+				gotSources := cfg.GetAggregatedSources()
+				if len(gotSources) != tt.wantSources {
+					t.Errorf("GetAggregatedSources() returned %d sources, want %d", len(gotSources), tt.wantSources)
+				}
 			}
 		})
+	}
+}
+
+func TestConfig_AggregatedSourcesContainers(t *testing.T) {
+	cfg := Config{
+		Sources: []SourceConfig{
+			{StorageAccountName: "account1", ContainerName: "container1", FilePattern: ".*\\.json$"},
+			{StorageAccountName: "account1", ContainerName: "container2", FilePattern: ".*\\.log$"},
+			{StorageAccountName: "account2", ContainerName: "container3", FilePattern: ".*"},
+		},
+		Output: OutputConfig{
+			Directory: ".",
+			Filename:  "output.ndjson",
+		},
+		Processing: ProcessingConfig{
+			Workers: 1,
+		},
+	}
+
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	sources := cfg.GetAggregatedSources()
+	if len(sources) != 2 {
+		t.Fatalf("Expected 2 aggregated sources, got %d", len(sources))
+	}
+
+	// First source should have 2 containers (account1)
+	account1 := sources[0]
+	if account1.StorageAccountName != "account1" {
+		t.Errorf("First source should be account1, got %s", account1.StorageAccountName)
+	}
+	if len(account1.Containers) != 2 {
+		t.Errorf("account1 should have 2 containers, got %d", len(account1.Containers))
+	}
+
+	// Second source should have 1 container (account2)
+	account2 := sources[1]
+	if account2.StorageAccountName != "account2" {
+		t.Errorf("Second source should be account2, got %s", account2.StorageAccountName)
+	}
+	if len(account2.Containers) != 1 {
+		t.Errorf("account2 should have 1 container, got %d", len(account2.Containers))
 	}
 }

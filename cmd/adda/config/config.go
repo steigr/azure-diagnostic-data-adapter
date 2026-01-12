@@ -17,8 +17,11 @@ import (
 
 // Config holds the complete application configuration.
 type Config struct {
-	// Source configuration
+	// Source configuration (single source, optional if sources is provided)
 	Source SourceConfig `mapstructure:"source"`
+
+	// Sources configuration (multiple sources, optional if source is provided)
+	Sources []SourceConfig `mapstructure:"sources"`
 
 	// Output configuration
 	Output OutputConfig `mapstructure:"output"`
@@ -37,38 +40,42 @@ type Config struct {
 
 	// Logging configuration
 	Logging LoggingConfig `mapstructure:"logging"`
+
+	// aggregatedSources is the internal merged and aggregated list of sources
+	aggregatedSources []AggregatedSource
 }
 
-// SourceConfig holds Azure Storage Account configuration.
+// SourceConfig holds Azure Storage Account configuration for a single source.
 type SourceConfig struct {
-	StorageAccountName string   `mapstructure:"storage_account_name"`
-	ContainerName      string   `mapstructure:"container_name"`
-	ContainerNames     []string `mapstructure:"container_names"`
-	FilePattern        string   `mapstructure:"file_pattern"`
-	ConnectionString   string   `mapstructure:"connection_string"`
+	StorageAccountName string `mapstructure:"storage_account_name"`
+	ContainerName      string `mapstructure:"container_name"`
+	FilePattern        string `mapstructure:"file_pattern"`
+	ConnectionString   string `mapstructure:"connection_string"`
 }
 
-// GetContainerNames returns all container names to process.
-// It merges container_name (singular) with container_names (plural).
-func (c *SourceConfig) GetContainerNames() []string {
-	seen := make(map[string]bool)
-	var result []string
+// IsEmpty returns true if the source config has no meaningful configuration.
+func (c *SourceConfig) IsEmpty() bool {
+	return c.StorageAccountName == "" && c.ConnectionString == "" && c.ContainerName == ""
+}
 
-	// Add singular container_name first if set
-	if c.ContainerName != "" && !seen[c.ContainerName] {
-		seen[c.ContainerName] = true
-		result = append(result, c.ContainerName)
-	}
+// AggregatedSource represents sources aggregated by storage account for efficiency.
+// This allows sharing a single Azure client connection for multiple containers.
+type AggregatedSource struct {
+	StorageAccountName string
+	ConnectionString   string
+	Containers         []ContainerSource
+}
 
-	// Add all container_names
-	for _, name := range c.ContainerNames {
-		if name != "" && !seen[name] {
-			seen[name] = true
-			result = append(result, name)
-		}
-	}
+// ContainerSource represents a single container with its file pattern.
+type ContainerSource struct {
+	ContainerName string
+	FilePattern   string
+}
 
-	return result
+// GetAggregatedSources returns the list of sources aggregated by storage account.
+// This is computed once during validation and cached.
+func (c *Config) GetAggregatedSources() []AggregatedSource {
+	return c.aggregatedSources
 }
 
 // OutputConfig holds output file configuration.
@@ -251,12 +258,9 @@ func setDefaults(v *viper.Viper) {
 
 // Validate validates the configuration.
 func (c *Config) Validate() error {
-	// Validate source
-	if c.Source.StorageAccountName == "" && c.Source.ConnectionString == "" {
-		return fmt.Errorf("source.storage_account_name or source.connection_string is required")
-	}
-	if len(c.Source.GetContainerNames()) == 0 {
-		return fmt.Errorf("source.container_name or source.container_names is required")
+	// Collect and validate sources
+	if err := c.collectAndAggregateSources(); err != nil {
+		return err
 	}
 
 	// Validate output
@@ -384,4 +388,109 @@ func (c *Config) EnsureOutputDir() error {
 		return fmt.Errorf("failed to create output directory %s: %w", c.Output.Directory, err)
 	}
 	return nil
+}
+
+// collectAndAggregateSources collects sources from both 'source' and 'sources' config,
+// validates them, and aggregates by storage account for API efficiency.
+func (c *Config) collectAndAggregateSources() error {
+	// Collect all source configs
+	var allSources []SourceConfig
+
+	// Add single source if configured
+	if !c.Source.IsEmpty() {
+		if err := validateSourceConfig(&c.Source, "source"); err != nil {
+			return err
+		}
+		allSources = append(allSources, c.Source)
+	}
+
+	// Add sources from the list
+	for i, src := range c.Sources {
+		if src.IsEmpty() {
+			continue
+		}
+		if err := validateSourceConfig(&src, fmt.Sprintf("sources[%d]", i)); err != nil {
+			return err
+		}
+		allSources = append(allSources, src)
+	}
+
+	// Ensure at least one source is configured
+	if len(allSources) == 0 {
+		return fmt.Errorf("at least one source must be configured via 'source' or 'sources'")
+	}
+
+	// Aggregate sources by storage account (or connection string) for efficiency
+	c.aggregatedSources = aggregateSourcesByAccount(allSources)
+
+	return nil
+}
+
+// validateSourceConfig validates a single source configuration.
+func validateSourceConfig(src *SourceConfig, prefix string) error {
+	if src.StorageAccountName == "" && src.ConnectionString == "" {
+		return fmt.Errorf("%s: storage_account_name or connection_string is required", prefix)
+	}
+	if src.ContainerName == "" {
+		return fmt.Errorf("%s: container_name is required", prefix)
+	}
+	return nil
+}
+
+// aggregateSourcesByAccount groups sources by their storage account (or connection string)
+// to allow sharing Azure client connections for efficiency.
+func aggregateSourcesByAccount(sources []SourceConfig) []AggregatedSource {
+	// Use a map to group by account identifier
+	// Key is either connection_string or storage_account_name
+	type accountKey struct {
+		connectionString   string
+		storageAccountName string
+	}
+
+	aggregated := make(map[accountKey]*AggregatedSource)
+	var order []accountKey // Preserve insertion order
+
+	for _, src := range sources {
+		key := accountKey{
+			connectionString:   src.ConnectionString,
+			storageAccountName: src.StorageAccountName,
+		}
+
+		if existing, ok := aggregated[key]; ok {
+			// Check for duplicate container+pattern combinations
+			isDuplicate := false
+			for _, cs := range existing.Containers {
+				if cs.ContainerName == src.ContainerName && cs.FilePattern == src.FilePattern {
+					isDuplicate = true
+					break
+				}
+			}
+			if !isDuplicate {
+				existing.Containers = append(existing.Containers, ContainerSource{
+					ContainerName: src.ContainerName,
+					FilePattern:   src.FilePattern,
+				})
+			}
+		} else {
+			aggregated[key] = &AggregatedSource{
+				StorageAccountName: src.StorageAccountName,
+				ConnectionString:   src.ConnectionString,
+				Containers: []ContainerSource{
+					{
+						ContainerName: src.ContainerName,
+						FilePattern:   src.FilePattern,
+					},
+				},
+			}
+			order = append(order, key)
+		}
+	}
+
+	// Convert map to slice preserving order
+	result := make([]AggregatedSource, 0, len(order))
+	for _, key := range order {
+		result = append(result, *aggregated[key])
+	}
+
+	return result
 }

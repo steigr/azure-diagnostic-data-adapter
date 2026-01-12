@@ -36,40 +36,56 @@ type Processor struct {
 
 // New creates a new Processor.
 func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Processor, error) {
-	// Get all container names to process
-	containerNames := cfg.Source.GetContainerNames()
-	if len(containerNames) == 0 {
-		return nil, fmt.Errorf("no container names configured")
+	// Get aggregated sources (grouped by storage account for efficiency)
+	aggregatedSources := cfg.GetAggregatedSources()
+	if len(aggregatedSources) == 0 {
+		return nil, fmt.Errorf("no sources configured")
 	}
 
-	// Create readers for each container
+	// Create readers for each container across all sources
 	var readers []*reader.Reader
-	for _, containerName := range containerNames {
-		var r *reader.Reader
-		var err error
-		if cfg.Source.ConnectionString != "" {
-			r, err = reader.NewWithConnectionString(
-				cfg.Source.ConnectionString,
-				containerName,
-				cfg.Source.FilePattern,
-			)
-		} else {
-			r, err = reader.New(ctx, reader.Config{
-				StorageAccountName: cfg.Source.StorageAccountName,
-				ContainerName:      containerName,
-				FilePattern:        cfg.Source.FilePattern,
-			})
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to create reader for container %s: %w", containerName, err)
-		}
+	var allContainerInfo []string
 
-		// Set logger for the reader
-		r.SetLogger(logger)
-		readers = append(readers, r)
+	for _, aggSource := range aggregatedSources {
+		for _, container := range aggSource.Containers {
+			var r *reader.Reader
+			var err error
+
+			if aggSource.ConnectionString != "" {
+				r, err = reader.NewWithConnectionString(
+					aggSource.ConnectionString,
+					container.ContainerName,
+					container.FilePattern,
+				)
+			} else {
+				r, err = reader.New(ctx, reader.Config{
+					StorageAccountName: aggSource.StorageAccountName,
+					ContainerName:      container.ContainerName,
+					FilePattern:        container.FilePattern,
+				})
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to create reader for container %s: %w", container.ContainerName, err)
+			}
+
+			// Set logger for the reader
+			r.SetLogger(logger)
+			readers = append(readers, r)
+
+			// Track container info for logging
+			if aggSource.StorageAccountName != "" {
+				allContainerInfo = append(allContainerInfo, fmt.Sprintf("%s/%s", aggSource.StorageAccountName, container.ContainerName))
+			} else {
+				allContainerInfo = append(allContainerInfo, container.ContainerName)
+			}
+		}
 	}
 
-	logger.Info("created readers for containers", "containers", containerNames, "count", len(readers))
+	logger.Info("created readers for containers",
+		"sources", len(aggregatedSources),
+		"containers", allContainerInfo,
+		"count", len(readers),
+	)
 
 	// Create parser registry
 	parsers := parser.NewRegistry()
@@ -324,11 +340,19 @@ func (p *Processor) RunOnce(ctx context.Context) error {
 // DryRun lists blobs, shows which parser would be used, and displays enrichment preview.
 func (p *Processor) DryRun(ctx context.Context) error {
 	p.logger.Info("=== DRY RUN MODE ===")
-	p.logger.Info("listing blobs from storage",
-		"storage_account", p.cfg.Source.StorageAccountName,
-		"containers", p.cfg.Source.GetContainerNames(),
-		"file_pattern", p.cfg.Source.FilePattern,
-	)
+
+	// Log all configured sources
+	aggregatedSources := p.cfg.GetAggregatedSources()
+	for _, aggSource := range aggregatedSources {
+		var containerNames []string
+		for _, c := range aggSource.Containers {
+			containerNames = append(containerNames, c.ContainerName)
+		}
+		p.logger.Info("configured source",
+			"storage_account", aggSource.StorageAccountName,
+			"containers", containerNames,
+		)
+	}
 
 	// Show available parsers
 	p.logger.Info("configured parsers", "parsers", p.parsers.List())
@@ -417,11 +441,13 @@ func (p *Processor) showEnrichmentPreview() {
 		return
 	}
 
-	// Get container name for preview (use first container)
-	containerNames := p.cfg.Source.GetContainerNames()
+	// Get container and storage account for preview (use first source)
 	containerName := ""
-	if len(containerNames) > 0 {
-		containerName = containerNames[0]
+	storageAccountName := ""
+	aggregatedSources := p.cfg.GetAggregatedSources()
+	if len(aggregatedSources) > 0 && len(aggregatedSources[0].Containers) > 0 {
+		containerName = aggregatedSources[0].Containers[0].ContainerName
+		storageAccountName = aggregatedSources[0].StorageAccountName
 	}
 
 	// Create sample file match for preview
@@ -435,7 +461,7 @@ func (p *Processor) showEnrichmentPreview() {
 	sampleMetadata := enricher.NewMetadataWithFileMatch(
 		"example/path/sample-file.json",
 		containerName,
-		p.cfg.Source.StorageAccountName,
+		storageAccountName,
 		time.Now(),
 		1024,
 		"application/json",

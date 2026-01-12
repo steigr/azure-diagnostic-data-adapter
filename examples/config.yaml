@@ -1,5 +1,6 @@
 # Azure Diagnostic Data Reader - Example Configuration
 
+# Single source configuration (optional if 'sources' is provided)
 source:
   # Azure Storage Account name (uses DefaultAzureCredential for auth)
   storage_account_name: "mystorageaccount"
@@ -7,18 +8,35 @@ source:
   # Alternatively, use a connection string (not recommended for production)
   # connection_string: "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
   
-  # Single blob container name (can be combined with container_names)
+  # Blob container name
   container_name: "diagnostics"
-  
-  # Multiple blob container names (can be combined with container_name)
-  # Duplicates are automatically removed
-  # container_names:
-  #   - "logs-production"
-  #   - "logs-staging"
-  #   - "logs-development"
   
   # Regex pattern to match blob names (optional)
   file_pattern: ".*\\.json$"
+
+# Multiple sources configuration (optional if 'source' is provided)
+# Sources are aggregated by storage_account_name for API efficiency
+# sources:
+#   # First source - production logs
+#   - storage_account_name: "prodstorageaccount"
+#     container_name: "logs-production"
+#     file_pattern: ".*\\.json$"
+#
+#   # Second source - same storage account, different container
+#   # (will share the same Azure client connection)
+#   - storage_account_name: "prodstorageaccount"
+#     container_name: "logs-staging"
+#     file_pattern: ".*\\.json$"
+#
+#   # Third source - different storage account
+#   - storage_account_name: "devstorageaccount"
+#     container_name: "logs-development"
+#     file_pattern: ".*\\.log$"
+#
+#   # Source with connection string
+#   - connection_string: "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=..."
+#     container_name: "archive"
+#     file_pattern: ".*\\.json$"
 
 output:
   # Directory for NDJSON output files
