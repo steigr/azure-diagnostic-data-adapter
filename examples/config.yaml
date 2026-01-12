@@ -42,18 +42,22 @@ output:
   # Directory for NDJSON output files
   directory: "/var/log/adda"
   
-  # Output filename
+  # Output filename (hash suffix will be added based on source)
+  # e.g., diagnostics_abc12345.ndjson
   filename: "diagnostics.ndjson"
   
-  # Max file size in MB before rotation
-  max_size: 100
-  
-  # Max number of backup files to keep
-  max_backups: 5
-  
-  # Max age in days for backup files
-  max_age: 30
-  
+  # Max file size in MB before rotation (0 = disabled, default)
+  # Set to e.g. 100 to enable rotation at 100MB
+  max_size: 0
+
+  # Max number of backup files to keep (0 = keep all, default)
+  # Only applies when max_size > 0
+  max_backups: 0
+
+  # Max age in days for backup files (0 = keep forever, default)
+  # Only applies when max_size > 0
+  max_age: 0
+
   # Enable gzip compression for output (default: false)
   # When enabled, padding is not applied to first writes
   gzip: false

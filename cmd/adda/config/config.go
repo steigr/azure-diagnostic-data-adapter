@@ -223,12 +223,12 @@ func Load(configPath string) (*Config, error) {
 
 // setDefaults sets default configuration values.
 func setDefaults(v *viper.Viper) {
-	// Output defaults
+	// Output defaults - rotation disabled by default (0 = disabled)
 	v.SetDefault("output.directory", ".")
 	v.SetDefault("output.filename", "output.ndjson")
-	v.SetDefault("output.max_size", 100) // 100 MB
-	v.SetDefault("output.max_backups", 3)
-	v.SetDefault("output.max_age", 28) // 28 days
+	v.SetDefault("output.max_size", 0)    // 0 = no size-based rotation (disabled by default)
+	v.SetDefault("output.max_backups", 0) // 0 = keep all old files
+	v.SetDefault("output.max_age", 0)     // 0 = don't remove old files based on age
 	v.SetDefault("output.gzip", false)
 
 	// Metrics defaults

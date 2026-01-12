@@ -3,10 +3,14 @@ package writer
 
 import (
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -44,22 +48,15 @@ type Config struct {
 }
 
 // New creates a new Writer with the given configuration.
+// If MaxSize is 0, file rotation is disabled (files grow indefinitely).
+// If MaxBackups is 0, old files are not removed based on count.
+// If MaxAge is 0, old files are not removed based on age.
 func New(cfg Config) *Writer {
-	if cfg.MaxSize == 0 {
-		cfg.MaxSize = 100 // 100 MB default
-	}
-	if cfg.MaxBackups == 0 {
-		cfg.MaxBackups = 3
-	}
-	if cfg.MaxAge == 0 {
-		cfg.MaxAge = 28 // 28 days default
-	}
-
 	logger := &lumberjack.Logger{
 		Filename:   cfg.Filename,
-		MaxSize:    cfg.MaxSize,
-		MaxBackups: cfg.MaxBackups,
-		MaxAge:     cfg.MaxAge,
+		MaxSize:    cfg.MaxSize,    // 0 means no size-based rotation
+		MaxBackups: cfg.MaxBackups, // 0 means keep all old files
+		MaxAge:     cfg.MaxAge,     // 0 means don't remove old files based on age
 	}
 
 	// Check if the file already exists and has content (only relevant for non-gzip)
@@ -205,3 +202,164 @@ type WriterInterface interface {
 
 // Ensure Writer implements WriterInterface
 var _ WriterInterface = (*Writer)(nil)
+
+// SourceInfo contains information about the source of data for generating output filenames.
+type SourceInfo struct {
+	BlobName           string
+	ContainerName      string
+	StorageAccountName string
+}
+
+// MultiWriter manages multiple output files based on source hash.
+// Each unique combination of blob name, container name, and storage account name
+// gets its own output file with a hash suffix.
+type MultiWriter struct {
+	baseConfig Config
+	writers    map[string]*Writer
+	mu         sync.RWMutex
+}
+
+// NewMultiWriter creates a new MultiWriter with the given base configuration.
+func NewMultiWriter(cfg Config) *MultiWriter {
+	return &MultiWriter{
+		baseConfig: cfg,
+		writers:    make(map[string]*Writer),
+	}
+}
+
+// GenerateSourceHash generates a short hash from source information.
+// The hash is based on blob name, container name, and storage account name.
+func GenerateSourceHash(info SourceInfo) string {
+	data := fmt.Sprintf("%s|%s|%s", info.StorageAccountName, info.ContainerName, info.BlobName)
+	hash := sha256.Sum256([]byte(data))
+	// Use first 8 characters of hex-encoded hash for a short but unique suffix
+	return hex.EncodeToString(hash[:])[:8]
+}
+
+// getOrCreateWriter gets an existing writer or creates a new one for the given source.
+func (m *MultiWriter) getOrCreateWriter(info SourceInfo) (*Writer, error) {
+	hash := GenerateSourceHash(info)
+
+	// Check if writer already exists (read lock)
+	m.mu.RLock()
+	if w, exists := m.writers[hash]; exists {
+		m.mu.RUnlock()
+		return w, nil
+	}
+	m.mu.RUnlock()
+
+	// Create new writer (write lock)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if w, exists := m.writers[hash]; exists {
+		return w, nil
+	}
+
+	// Generate filename with hash suffix
+	filename := m.generateFilename(hash)
+
+	// Create writer config for this source
+	cfg := Config{
+		Filename:   filename,
+		MaxSize:    m.baseConfig.MaxSize,
+		MaxBackups: m.baseConfig.MaxBackups,
+		MaxAge:     m.baseConfig.MaxAge,
+		Gzip:       m.baseConfig.Gzip,
+	}
+
+	w := New(cfg)
+	m.writers[hash] = w
+	return w, nil
+}
+
+// generateFilename generates a filename with the hash suffix.
+// For example: "/var/log/output.ndjson" -> "/var/log/output_abc12345.ndjson"
+func (m *MultiWriter) generateFilename(hash string) string {
+	base := m.baseConfig.Filename
+	ext := filepath.Ext(base)
+	nameWithoutExt := strings.TrimSuffix(base, ext)
+	return fmt.Sprintf("%s_%s%s", nameWithoutExt, hash, ext)
+}
+
+// WriteWithSource writes a single record to the appropriate file based on source info.
+func (m *MultiWriter) WriteWithSource(record map[string]any, info SourceInfo) error {
+	w, err := m.getOrCreateWriter(info)
+	if err != nil {
+		return err
+	}
+	return w.Write(record)
+}
+
+// WriteBatchWithSource writes multiple records to the appropriate file based on source info.
+func (m *MultiWriter) WriteBatchWithSource(records []map[string]any, info SourceInfo) (int, error) {
+	w, err := m.getOrCreateWriter(info)
+	if err != nil {
+		return 0, err
+	}
+	return w.WriteBatch(records)
+}
+
+// Write writes a single record (uses default writer - for backwards compatibility).
+func (m *MultiWriter) Write(record map[string]any) error {
+	return m.WriteWithSource(record, SourceInfo{})
+}
+
+// WriteBatch writes multiple records (uses default writer - for backwards compatibility).
+func (m *MultiWriter) WriteBatch(records []map[string]any) (int, error) {
+	return m.WriteBatchWithSource(records, SourceInfo{})
+}
+
+// Flush flushes all writers.
+func (m *MultiWriter) Flush() error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var lastErr error
+	for _, w := range m.writers {
+		if err := w.Flush(); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+// Rotate rotates all writers.
+func (m *MultiWriter) Rotate() error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var lastErr error
+	for _, w := range m.writers {
+		if err := w.Rotate(); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+// Close closes all writers.
+func (m *MultiWriter) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var lastErr error
+	for hash, w := range m.writers {
+		if err := w.Close(); err != nil {
+			lastErr = err
+		}
+		delete(m.writers, hash)
+	}
+	return lastErr
+}
+
+// GetWriterCount returns the number of active writers.
+func (m *MultiWriter) GetWriterCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.writers)
+}
+
+// Ensure MultiWriter implements WriterInterface
+var _ WriterInterface = (*MultiWriter)(nil)

@@ -398,3 +398,201 @@ func TestWriter_Gzip_WriteBatch(t *testing.T) {
 		t.Errorf("Gzip file has %d lines, want 3", lines)
 	}
 }
+
+func TestGenerateSourceHash(t *testing.T) {
+	tests := []struct {
+		name     string
+		info     SourceInfo
+		wantLen  int
+		wantSame bool
+		other    SourceInfo
+	}{
+		{
+			name: "generates 8 char hash",
+			info: SourceInfo{
+				BlobName:           "logs/2026/01/12/data.json",
+				ContainerName:      "my-container",
+				StorageAccountName: "mystorageaccount",
+			},
+			wantLen: 8,
+		},
+		{
+			name: "same input produces same hash",
+			info: SourceInfo{
+				BlobName:           "test.json",
+				ContainerName:      "container",
+				StorageAccountName: "account",
+			},
+			wantSame: true,
+			other: SourceInfo{
+				BlobName:           "test.json",
+				ContainerName:      "container",
+				StorageAccountName: "account",
+			},
+		},
+		{
+			name: "different blob produces different hash",
+			info: SourceInfo{
+				BlobName:           "test1.json",
+				ContainerName:      "container",
+				StorageAccountName: "account",
+			},
+			wantSame: false,
+			other: SourceInfo{
+				BlobName:           "test2.json",
+				ContainerName:      "container",
+				StorageAccountName: "account",
+			},
+		},
+		{
+			name: "different container produces different hash",
+			info: SourceInfo{
+				BlobName:           "test.json",
+				ContainerName:      "container1",
+				StorageAccountName: "account",
+			},
+			wantSame: false,
+			other: SourceInfo{
+				BlobName:           "test.json",
+				ContainerName:      "container2",
+				StorageAccountName: "account",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hash := GenerateSourceHash(tt.info)
+
+			if tt.wantLen > 0 && len(hash) != tt.wantLen {
+				t.Errorf("GenerateSourceHash() len = %d, want %d", len(hash), tt.wantLen)
+			}
+
+			if tt.other.BlobName != "" || tt.other.ContainerName != "" {
+				otherHash := GenerateSourceHash(tt.other)
+				if tt.wantSame && hash != otherHash {
+					t.Errorf("Expected same hash, got %s and %s", hash, otherHash)
+				}
+				if !tt.wantSame && hash == otherHash {
+					t.Errorf("Expected different hash, both got %s", hash)
+				}
+			}
+		})
+	}
+}
+
+func TestMultiWriter_WriteBatchWithSource(t *testing.T) {
+	dir := t.TempDir()
+	baseFilename := filepath.Join(dir, "output.ndjson")
+
+	mw := NewMultiWriter(Config{
+		Filename:   baseFilename,
+		MaxSize:    100,
+		MaxBackups: 3,
+		MaxAge:     7,
+	})
+	defer func() { _ = mw.Close() }()
+
+	// Write to two different sources
+	source1 := SourceInfo{
+		BlobName:           "logs/file1.json",
+		ContainerName:      "container1",
+		StorageAccountName: "account1",
+	}
+	source2 := SourceInfo{
+		BlobName:           "logs/file2.json",
+		ContainerName:      "container2",
+		StorageAccountName: "account2",
+	}
+
+	records1 := []map[string]any{
+		{"source": "1", "id": 1},
+		{"source": "1", "id": 2},
+	}
+	records2 := []map[string]any{
+		{"source": "2", "id": 1},
+	}
+
+	written1, err := mw.WriteBatchWithSource(records1, source1)
+	if err != nil {
+		t.Fatalf("WriteBatchWithSource(source1) error = %v", err)
+	}
+	if written1 != 2 {
+		t.Errorf("written1 = %d, want 2", written1)
+	}
+
+	written2, err := mw.WriteBatchWithSource(records2, source2)
+	if err != nil {
+		t.Fatalf("WriteBatchWithSource(source2) error = %v", err)
+	}
+	if written2 != 1 {
+		t.Errorf("written2 = %d, want 1", written2)
+	}
+
+	// Should have 2 writers
+	if mw.GetWriterCount() != 2 {
+		t.Errorf("GetWriterCount() = %d, want 2", mw.GetWriterCount())
+	}
+
+	// Verify files were created with hash suffixes
+	hash1 := GenerateSourceHash(source1)
+	hash2 := GenerateSourceHash(source2)
+
+	file1 := filepath.Join(dir, "output_"+hash1+".ndjson")
+	file2 := filepath.Join(dir, "output_"+hash2+".ndjson")
+
+	if _, err := os.Stat(file1); os.IsNotExist(err) {
+		t.Errorf("Expected file %s to exist", file1)
+	}
+	if _, err := os.Stat(file2); os.IsNotExist(err) {
+		t.Errorf("Expected file %s to exist", file2)
+	}
+}
+
+func TestMultiWriter_SameSourceSameFile(t *testing.T) {
+	dir := t.TempDir()
+	baseFilename := filepath.Join(dir, "output.ndjson")
+
+	mw := NewMultiWriter(Config{
+		Filename: baseFilename,
+	})
+	defer func() { _ = mw.Close() }()
+
+	source := SourceInfo{
+		BlobName:           "test.json",
+		ContainerName:      "container",
+		StorageAccountName: "account",
+	}
+
+	// Write multiple batches to same source
+	for i := 0; i < 3; i++ {
+		records := []map[string]any{{"batch": i}}
+		if _, err := mw.WriteBatchWithSource(records, source); err != nil {
+			t.Fatalf("WriteBatchWithSource() error = %v", err)
+		}
+	}
+
+	// Should still have only 1 writer
+	if mw.GetWriterCount() != 1 {
+		t.Errorf("GetWriterCount() = %d, want 1", mw.GetWriterCount())
+	}
+
+	// Verify file has 3 lines
+	hash := GenerateSourceHash(source)
+	filename := filepath.Join(dir, "output_"+hash+".ndjson")
+
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	lines := 0
+	for _, b := range data {
+		if b == '\n' {
+			lines++
+		}
+	}
+	if lines != 3 {
+		t.Errorf("File has %d lines, want 3", lines)
+	}
+}

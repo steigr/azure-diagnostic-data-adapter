@@ -29,7 +29,7 @@ type Processor struct {
 	readers  []*reader.Reader // One reader per container
 	parsers  *parser.Registry
 	enricher *enricher.Enricher
-	writer   *writer.Writer
+	writer   *writer.MultiWriter
 	metrics  *metrics.Metrics
 	logger   *slog.Logger
 }
@@ -138,7 +138,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 	if err := cfg.EnsureOutputDir(); err != nil {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
-	w := writer.New(cfg.GetWriterConfig())
+	w := writer.NewMultiWriter(cfg.GetWriterConfig())
 
 	// Create metrics
 	m := metrics.New()
@@ -725,8 +725,13 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo, rdr *
 		return fmt.Errorf("failed to enrich records: %w", err)
 	}
 
-	// Write records
-	written, err := p.writer.WriteBatch(enrichedRecords)
+	// Write records to file based on source hash
+	sourceInfo := writer.SourceInfo{
+		BlobName:           blob.Name,
+		ContainerName:      containerName,
+		StorageAccountName: storageAccountName,
+	}
+	written, err := p.writer.WriteBatchWithSource(enrichedRecords, sourceInfo)
 	if err != nil {
 		return fmt.Errorf("failed to write records: %w", err)
 	}
@@ -750,6 +755,7 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo, rdr *
 		"container", containerName,
 		"name", blob.Name,
 		"records", len(enrichedRecords),
+		"output_file_hash", writer.GenerateSourceHash(sourceInfo),
 		"duration", elapsed,
 	)
 

@@ -47,9 +47,9 @@ func main() {
 	// Output flags
 	rootCmd.Flags().String("output-dir", ".", "Output directory for NDJSON files")
 	rootCmd.Flags().String("output-file", "output.ndjson", "Output filename")
-	rootCmd.Flags().Int("max-size", 100, "Max file size in MB before rotation")
-	rootCmd.Flags().Int("max-backups", 3, "Max number of backup files")
-	rootCmd.Flags().Int("max-age", 28, "Max age in days for backup files")
+	rootCmd.Flags().Int("max-size", 0, "Max file size in MB before rotation (0 = disabled)")
+	rootCmd.Flags().Int("max-backups", 0, "Max number of backup files to keep (0 = keep all)")
+	rootCmd.Flags().Int("max-age", 0, "Max age in days for backup files (0 = keep forever)")
 	rootCmd.Flags().Bool("gzip", false, "Enable gzip compression for output")
 
 	// Processing flags
