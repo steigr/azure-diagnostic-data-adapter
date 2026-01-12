@@ -137,8 +137,9 @@ processing:
   # Enable backoff on low disk space
   backoff_enabled: true
   
-  # Minimum free space in GB
-  min_free_space_gb: 1
+  # Minimum free space with unit (default: 256MiB)
+  # Supported units: B, KB, KiB, MB, MiB, GB, GiB, TB, TiB
+  min_free_space: "256MiB"
   
   # Retry attempts for failed operations
   retry_attempts: 3
@@ -174,7 +175,7 @@ processing:
 | `dry_run` | `--dry-run` | `false` | Preview mode |
 | `delete_after_process` | `--delete-after-process` | `true` | Delete processed blobs |
 | `backoff_enabled` | - | `true` | Enable disk space backoff |
-| `min_free_space_gb` | - | `1` | Min free space (GB) |
+| `min_free_space` | `--min-free-space` | `256MiB` | Min free space with unit |
 | `retry_attempts` | - | `3` | Retry count |
 | `retry_delay` | - | `5s` | Retry delay |
 | `temp_dir` | `--temp-dir` | System temp | Temp directory |
@@ -184,6 +185,41 @@ processing:
 | `min_age` | `--blob-min-age` | `0s` | Min blob age |
 | `max_age` | `--blob-max-age` | `0s` | Max blob age |
 | `poll_interval` | `--poll-interval` | `1m` | Poll interval |
+
+#### Disk Space Backoff
+
+When `backoff_enabled` is true, the adapter monitors free disk space in the output directory:
+
+- **Startup check**: Logs a warning if free space is below the threshold
+- **Continuous mode**: Skips processing cycles until space is available
+- **Once mode**: Returns an error if insufficient disk space
+
+The minimum free space is configured using human-readable byte size notation:
+
+**Supported units:**
+- `B` - Bytes
+- `KB` - Kilobytes (1000 bytes)
+- `KiB` - Kibibytes (1024 bytes)
+- `MB` - Megabytes (1000 KB)
+- `MiB` - Mebibytes (1024 KiB)
+- `GB` - Gigabytes (1000 MB)
+- `GiB` - Gibibytes (1024 MiB)
+- `TB` - Terabytes (1000 GB)
+- `TiB` - Tebibytes (1024 GiB)
+
+**Examples:**
+```yaml
+processing:
+  min_free_space: "1GB"      # 1 gigabyte (1,000,000,000 bytes)
+  min_free_space: "1GiB"     # 1 gibibyte (1,073,741,824 bytes)
+  min_free_space: "500MB"    # 500 megabytes
+  min_free_space: "256MiB"   # 256 mebibytes
+```
+
+**Prometheus metrics:**
+- `adda_output_dir_free_bytes`: Current free space
+- `adda_backoff_total`: Number of backoff events
+- `adda_backoff_active`: Whether backoff is currently active (1) or not (0)
 
 ### Metrics Configuration
 

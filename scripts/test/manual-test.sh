@@ -17,6 +17,7 @@ CONFIG_FILE="${SCRIPT_DIR}/manual-test-config.yaml"
 # Test configuration
 MIN_AGE_TEST="${MIN_AGE_TEST:-false}"  # Set to "true" to run min-age test
 MIN_AGE_SECONDS="${MIN_AGE_SECONDS:-15}"  # Minimum age in seconds for testing
+DISK_SPACE_TEST="${DISK_SPACE_TEST:-false}"  # Set to "true" to run disk space backoff test
 
 # Colors for output
 RED='\033[0;31m'
@@ -238,6 +239,148 @@ if [ "$MIN_AGE_TEST" = "true" ]; then
     exit 0
 fi
 
+# Test disk space backoff functionality if enabled
+if [ "$DISK_SPACE_TEST" = "true" ]; then
+    log_info "=== Testing disk space backoff functionality ==="
+
+    # Configuration for disk space test
+    POLL_INTERVAL="${POLL_INTERVAL:-5s}"  # Short poll interval for testing
+    BACKOFF_TARGET=2  # Number of backoffs before deleting blocker file
+    BLOCKER_FILE="$OUTPUT_DIR/.disk-space-blocker"
+    BLOCKER_SIZE_MB=10  # Small blocker file (10MB)
+
+    # Get current free space in the output directory
+    FREE_SPACE_KB=$(df -k "$OUTPUT_DIR" | tail -1 | awk '{print $4}')
+    FREE_SPACE_MB=$((FREE_SPACE_KB / 1024))
+
+    log_info "Current free space: ${FREE_SPACE_MB} MB"
+
+    # Set min-free-space to current free space (so after creating blocker, it will be below threshold)
+    # We set threshold to: current_free - blocker_size + margin
+    # After blocker is created, free space will be: current_free - blocker_size
+    # Which is less than threshold, triggering backoff
+    MIN_FREE_SPACE_MB=$((FREE_SPACE_MB - BLOCKER_SIZE_MB + 50))
+    MIN_FREE_SPACE="${MIN_FREE_SPACE_MB}MB"
+
+    log_info "Will set --min-free-space to ${MIN_FREE_SPACE}"
+    log_info "Will create ${BLOCKER_SIZE_MB} MB blocker file to reduce free space below threshold"
+
+    # Step 1: Create the blocker file FIRST to reduce free space below threshold
+    log_info "Creating blocker file (${BLOCKER_SIZE_MB} MB) BEFORE starting adda..."
+    dd if=/dev/zero of="$BLOCKER_FILE" bs=1M count="$BLOCKER_SIZE_MB" 2>/dev/null
+    log_success "Blocker file created: $BLOCKER_FILE"
+
+    # Show new free space (should be below threshold)
+    NEW_FREE_SPACE_KB=$(df -k "$OUTPUT_DIR" | tail -1 | awk '{print $4}')
+    NEW_FREE_SPACE_MB=$((NEW_FREE_SPACE_KB / 1024))
+    log_info "Free space after blocker: ${NEW_FREE_SPACE_MB} MB (threshold: ${MIN_FREE_SPACE_MB} MB)"
+
+    if [ "$NEW_FREE_SPACE_MB" -ge "$MIN_FREE_SPACE_MB" ]; then
+        log_warn "Free space is still above threshold. Backoff may not trigger."
+    else
+        log_success "Free space is below threshold. Backoff will trigger when adda starts."
+    fi
+
+    # Step 2: Create and upload a test file
+    log_info "Creating test file for processing..."
+    TEST_FILE=$(mktemp)
+    for i in $(seq 1 100); do
+        echo "{\"id\":$i,\"message\":\"disk space test record $i\"}"
+    done > "$TEST_FILE"
+
+    log_info "Uploading test file to Azurite..."
+    export AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+    az storage blob upload \
+        --container-name "test-diagnostics" \
+        --name "disk-space-test.json" \
+        --file "$TEST_FILE" \
+        --overwrite 2>/dev/null
+
+    rm -f "$TEST_FILE"
+    log_success "Test file uploaded"
+
+    # Step 3: Start adda - it should immediately enter backoff due to low disk space
+    log_info "Starting adda with --min-free-space $MIN_FREE_SPACE --poll-interval $POLL_INTERVAL --backoff-enabled"
+    log_info "adda should enter backoff immediately due to low disk space..."
+
+    cd "$PROJECT_ROOT"
+
+    # Run adda in background
+    ./bin/adda \
+        --config "$CONFIG_FILE" \
+        --log-level debug \
+        --log-format text \
+        --output-dir "$OUTPUT_DIR" \
+        --output-file "test-output.json" \
+        --min-free-space "$MIN_FREE_SPACE" \
+        --poll-interval "$POLL_INTERVAL" \
+        --backoff-enabled \
+        2>&1 &
+
+    ADDA_PID=$!
+    log_info "adda started (PID: $ADDA_PID)"
+
+    # Step 4: Monitor and delete blocker file after backoffs
+    BACKOFF_COUNT=0
+    while kill -0 "$ADDA_PID" 2>/dev/null; do
+        sleep 6  # Wait slightly longer than poll interval
+
+        if [ -f "$BLOCKER_FILE" ]; then
+            BACKOFF_COUNT=$((BACKOFF_COUNT + 1))
+            log_warn "Backoff cycle #$BACKOFF_COUNT (blocker file still present, free: ${NEW_FREE_SPACE_MB} MB < threshold: ${MIN_FREE_SPACE_MB} MB)"
+
+            # Update free space display
+            NEW_FREE_SPACE_KB=$(df -k "$OUTPUT_DIR" | tail -1 | awk '{print $4}')
+            NEW_FREE_SPACE_MB=$((NEW_FREE_SPACE_KB / 1024))
+
+            if [ "$BACKOFF_COUNT" -ge "$BACKOFF_TARGET" ]; then
+                log_info "Reached $BACKOFF_TARGET backoff cycles, deleting blocker file..."
+                rm -f "$BLOCKER_FILE"
+                log_success "Blocker file deleted!"
+
+                # Show restored free space
+                RESTORED_FREE_KB=$(df -k "$OUTPUT_DIR" | tail -1 | awk '{print $4}')
+                RESTORED_FREE_MB=$((RESTORED_FREE_KB / 1024))
+                log_info "Free space restored: ${RESTORED_FREE_MB} MB (threshold: ${MIN_FREE_SPACE_MB} MB)"
+                log_info "adda should now process the blob..."
+            fi
+        else
+            # Blocker file gone, wait for processing to complete
+            log_info "Blocker file removed, waiting for processing to complete..."
+            sleep 10
+            break
+        fi
+    done
+
+    # Wait a bit for adda to process
+    sleep 5
+
+    # Clean up
+    rm -f "$BLOCKER_FILE"
+    kill "$ADDA_PID" 2>/dev/null || true
+    wait "$ADDA_PID" 2>/dev/null || true
+
+    # Check results
+    if [ -f "$OUTPUT_DIR/test-output.json" ]; then
+        RECORD_COUNT=$(wc -l < "$OUTPUT_DIR/test-output.json" | tr -d ' ')
+        if [ "$RECORD_COUNT" -gt 0 ]; then
+            log_success "Disk space backoff test PASSED!"
+            log_success "- adda started with low disk space and entered backoff"
+            log_success "- After $BACKOFF_TARGET backoff cycles, blocker file was deleted"
+            log_success "- Processing resumed after disk space was restored"
+            log_success "- $RECORD_COUNT records were processed"
+        else
+            log_error "Disk space backoff test FAILED: No records processed"
+        fi
+    else
+        log_error "Disk space backoff test FAILED: No output file created"
+    fi
+
+    log_success "=== disk space backoff test complete ==="
+    show_output_file
+    exit 0
+fi
+
 # Run adda in debug mode (normal test)
 log_info "Starting adda in debug mode..."
 log_info "Output directory: $OUTPUT_DIR"
@@ -280,6 +423,7 @@ echo "  - Upload more test data: $SCRIPT_DIR/setup-test-data.sh"
 echo "  - Run adda again: ./bin/adda --config $CONFIG_FILE --log-level debug --once"
 echo "  - Run min-age test: MIN_AGE_TEST=true $0"
 echo "  - Run with custom min-age: MIN_AGE_TEST=true MIN_AGE_SECONDS=10 $0"
+echo "  - Run disk space test: DISK_SPACE_TEST=true $0"
 echo ""
 
 # Wait indefinitely (cleanup will happen on Ctrl+C)

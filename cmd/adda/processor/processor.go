@@ -55,6 +55,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 		return nil, fmt.Errorf("failed to create reader: %w", err)
 	}
 
+	// Set logger for the reader
+	r.SetLogger(logger)
+
 	// Create parser registry
 	parsers := parser.NewRegistry()
 	for _, pcfg := range cfg.Parsers {
@@ -110,7 +113,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 	// Create metrics
 	m := metrics.New()
 
-	return &Processor{
+	proc := &Processor{
 		cfg:      cfg,
 		reader:   r,
 		parsers:  parsers,
@@ -118,7 +121,69 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 		writer:   w,
 		metrics:  m,
 		logger:   logger,
-	}, nil
+	}
+
+	// Perform startup disk space check if backoff is enabled
+	if cfg.Processing.BackoffEnabled {
+		if err := proc.checkDiskSpaceStartup(); err != nil {
+			return nil, err
+		}
+	}
+
+	return proc, nil
+}
+
+// checkDiskSpaceStartup checks disk space at startup and logs a warning if low.
+func (p *Processor) checkDiskSpaceStartup() error {
+	freeSpace, err := utils.GetFreeSpace(p.cfg.Output.Directory)
+	if err != nil {
+		p.logger.Warn("failed to check disk space at startup", "error", err)
+		return nil // Don't fail startup, just warn
+	}
+
+	p.metrics.SetOutputDirFreeBytes(freeSpace)
+	minFreeBytes := p.cfg.Processing.GetMinFreeSpaceBytes()
+
+	p.logger.Info("disk space check",
+		"output_directory", p.cfg.Output.Directory,
+		"free_space_bytes", freeSpace,
+		"free_space_mb", float64(freeSpace)/(1024*1024),
+		"min_free_space_bytes", minFreeBytes,
+		"min_free_space_mb", float64(minFreeBytes)/(1024*1024),
+	)
+
+	if freeSpace < minFreeBytes {
+		p.logger.Warn("low disk space at startup - processing will be paused until space is available",
+			"free_space_mb", float64(freeSpace)/(1024*1024),
+			"min_free_space_mb", float64(minFreeBytes)/(1024*1024),
+		)
+		p.metrics.RecordBackoff()
+	}
+
+	return nil
+}
+
+// CheckDiskSpace checks if there is sufficient disk space for processing.
+// Returns true if there is enough space, false if backoff should occur.
+func (p *Processor) CheckDiskSpace() (bool, error) {
+	if !p.cfg.Processing.BackoffEnabled {
+		return true, nil
+	}
+
+	freeSpace, err := utils.GetFreeSpace(p.cfg.Output.Directory)
+	if err != nil {
+		return true, err // Continue on error, just warn
+	}
+
+	p.metrics.SetOutputDirFreeBytes(freeSpace)
+	minFreeBytes := p.cfg.Processing.GetMinFreeSpaceBytes()
+
+	if freeSpace < minFreeBytes {
+		return false, nil
+	}
+
+	p.metrics.ClearBackoff()
+	return true, nil
 }
 
 // Run starts the processing loop.
@@ -133,15 +198,23 @@ func (p *Processor) Run(ctx context.Context) error {
 		"workers", p.cfg.Processing.Workers,
 		"dry_run", p.cfg.Processing.DryRun,
 		"poll_interval", pollInterval,
+		"backoff_enabled", p.cfg.Processing.BackoffEnabled,
+		"min_free_space_bytes", p.cfg.Processing.GetMinFreeSpaceBytes(),
 	)
 
 	// Create ticker for polling
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	// Process immediately on start
-	if err := p.processOnce(ctx); err != nil {
-		p.logger.Error("processing error", "error", err)
+	// Process immediately on start (if disk space allows)
+	if hasSpace, err := p.CheckDiskSpace(); err != nil {
+		p.logger.Warn("failed to check disk space", "error", err)
+	} else if hasSpace {
+		if err := p.processOnce(ctx); err != nil {
+			p.logger.Error("processing error", "error", err)
+		}
+	} else {
+		p.logger.Warn("insufficient disk space, waiting for space to become available")
 	}
 
 	for {
@@ -150,6 +223,22 @@ func (p *Processor) Run(ctx context.Context) error {
 			p.logger.Info("processor stopped")
 			return ctx.Err()
 		case <-ticker.C:
+			// Check disk space before processing
+			hasSpace, err := p.CheckDiskSpace()
+			if err != nil {
+				p.logger.Warn("failed to check disk space", "error", err)
+			}
+
+			if !hasSpace {
+				freeSpace, _ := utils.GetFreeSpace(p.cfg.Output.Directory)
+				p.logger.Warn("insufficient disk space, skipping processing cycle",
+					"free_space_mb", float64(freeSpace)/(1024*1024),
+					"min_free_space_mb", float64(p.cfg.Processing.GetMinFreeSpaceBytes())/(1024*1024),
+				)
+				p.metrics.RecordBackoff()
+				continue
+			}
+
 			if err := p.processOnce(ctx); err != nil {
 				p.logger.Error("processing error", "error", err)
 			}
@@ -159,6 +248,24 @@ func (p *Processor) Run(ctx context.Context) error {
 
 // RunOnce processes all available blobs once and returns.
 func (p *Processor) RunOnce(ctx context.Context) error {
+	// Check disk space before processing
+	hasSpace, err := p.CheckDiskSpace()
+	if err != nil {
+		p.logger.Warn("failed to check disk space", "error", err)
+	}
+
+	if !hasSpace {
+		freeSpace, _ := utils.GetFreeSpace(p.cfg.Output.Directory)
+		p.logger.Warn("insufficient disk space, cannot process",
+			"free_space_mb", float64(freeSpace)/(1024*1024),
+			"min_free_space_mb", float64(p.cfg.Processing.GetMinFreeSpaceBytes())/(1024*1024),
+		)
+		p.metrics.RecordBackoff()
+		return fmt.Errorf("insufficient disk space: %.2f MB free, %.2f MB required",
+			float64(freeSpace)/(1024*1024),
+			float64(p.cfg.Processing.GetMinFreeSpaceBytes())/(1024*1024))
+	}
+
 	// Use once_limit for single-shot mode
 	limit := p.cfg.Processing.OnceLimit
 	if limit <= 0 {
@@ -290,22 +397,9 @@ func (p *Processor) processOnce(ctx context.Context) error {
 }
 
 func (p *Processor) processOnceWithLimit(ctx context.Context, limit int) error {
-	// Check free space if backoff is enabled
-	if p.cfg.Processing.BackoffEnabled {
-		freeSpace, err := utils.GetFreeSpace(p.cfg.Output.Directory)
-		if err != nil {
-			p.logger.Warn("failed to get free space", "error", err)
-		} else {
-			p.metrics.SetOutputDirFreeBytes(freeSpace)
-			minFreeBytes := uint64(p.cfg.Processing.MinFreeSpaceGB) * 1024 * 1024 * 1024
-			if freeSpace < minFreeBytes {
-				p.logger.Warn("insufficient free space, backing off",
-					"free_space_gb", float64(freeSpace)/(1024*1024*1024),
-					"min_free_space_gb", p.cfg.Processing.MinFreeSpaceGB,
-				)
-				return nil
-			}
-		}
+	// Update free space metric
+	if freeSpace, err := utils.GetFreeSpace(p.cfg.Output.Directory); err == nil {
+		p.metrics.SetOutputDirFreeBytes(freeSpace)
 	}
 
 	// Determine sort order

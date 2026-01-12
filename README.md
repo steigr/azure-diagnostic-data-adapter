@@ -233,6 +233,8 @@ Prometheus metrics are exposed at `/metrics`:
 | `adda_polls_total` | Counter | Total poll attempts |
 | `adda_polls_with_data_total` | Counter | Polls that found data |
 | `adda_polls_empty_total` | Counter | Polls with no data |
+| `adda_backoff_total` | Counter | Backoff events due to low disk space |
+| `adda_backoff_active` | Gauge | Whether backoff is active (1) or not (0) |
 
 Health check endpoint: `/health`
 

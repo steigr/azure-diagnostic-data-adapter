@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -66,7 +69,7 @@ type ProcessingConfig struct {
 	DryRun             bool          `mapstructure:"dry_run"`
 	DeleteAfterProcess bool          `mapstructure:"delete_after_process"`
 	BackoffEnabled     bool          `mapstructure:"backoff_enabled"`
-	MinFreeSpaceGB     int           `mapstructure:"min_free_space_gb"`
+	MinFreeSpace       string        `mapstructure:"min_free_space"` // Minimum free space with unit (e.g., "1GB", "500MB", "100MiB")
 	RetryAttempts      int           `mapstructure:"retry_attempts"`
 	RetryDelay         time.Duration `mapstructure:"retry_delay"`
 	TempDir            string        `mapstructure:"temp_dir"`
@@ -78,6 +81,66 @@ type ProcessingConfig struct {
 	PollInterval       time.Duration `mapstructure:"poll_interval"` // Interval between polling for new blobs (default: 1m)
 }
 
+// ParseByteSize parses a byte size string with units (e.g., "1GB", "500MB", "100MiB").
+// Supported units: B, KB, KiB, MB, MiB, GB, GiB, TB, TiB
+// If no unit is specified, bytes are assumed.
+func ParseByteSize(s string) (uint64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return 0, nil
+	}
+
+	// Regex to match number and optional unit
+	re := regexp.MustCompile(`(?i)^(\d+(?:\.\d+)?)\s*(b|kb|kib|mb|mib|gb|gib|tb|tib)?$`)
+	matches := re.FindStringSubmatch(s)
+	if matches == nil {
+		return 0, fmt.Errorf("invalid byte size format: %s", s)
+	}
+
+	value, err := strconv.ParseFloat(matches[1], 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid number in byte size: %s", s)
+	}
+
+	unit := strings.ToLower(matches[2])
+	var multiplier float64
+
+	switch unit {
+	case "", "b":
+		multiplier = 1
+	case "kb":
+		multiplier = 1000
+	case "kib":
+		multiplier = 1024
+	case "mb":
+		multiplier = 1000 * 1000
+	case "mib":
+		multiplier = 1024 * 1024
+	case "gb":
+		multiplier = 1000 * 1000 * 1000
+	case "gib":
+		multiplier = 1024 * 1024 * 1024
+	case "tb":
+		multiplier = 1000 * 1000 * 1000 * 1000
+	case "tib":
+		multiplier = 1024 * 1024 * 1024 * 1024
+	default:
+		return 0, fmt.Errorf("unknown byte size unit: %s", unit)
+	}
+
+	return uint64(value * multiplier), nil
+}
+
+// GetMinFreeSpaceBytes returns the minimum free space in bytes.
+func (c *ProcessingConfig) GetMinFreeSpaceBytes() uint64 {
+	bytes, err := ParseByteSize(c.MinFreeSpace)
+	if err != nil {
+		// Default to 256MiB if parsing fails
+		return 256 * 1024 * 1024
+	}
+	return bytes
+}
+
 // LoggingConfig holds logging configuration.
 type LoggingConfig struct {
 	Level  string `mapstructure:"level"`  // debug, info, warn, error
@@ -86,7 +149,8 @@ type LoggingConfig struct {
 
 // Load loads configuration from file, environment, and flags.
 func Load(configPath string) (*Config, error) {
-	v := viper.New()
+	// Use the global viper instance to respect CLI flag bindings
+	v := viper.GetViper()
 
 	// Set defaults
 	setDefaults(v)
@@ -145,7 +209,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("processing.dry_run", false)
 	v.SetDefault("processing.delete_after_process", true)
 	v.SetDefault("processing.backoff_enabled", true)
-	v.SetDefault("processing.min_free_space_gb", 1)
+	v.SetDefault("processing.min_free_space", "256MiB") // Default 256MiB minimum free space
 	v.SetDefault("processing.retry_attempts", 3)
 	v.SetDefault("processing.retry_delay", "5s")
 	v.SetDefault("processing.temp_dir", os.TempDir())
@@ -192,8 +256,10 @@ func (c *Config) Validate() error {
 	if c.Processing.Workers < 1 {
 		return fmt.Errorf("processing.workers must be at least 1")
 	}
-	if c.Processing.MinFreeSpaceGB < 0 {
-		return fmt.Errorf("processing.min_free_space_gb must be non-negative")
+	if c.Processing.MinFreeSpace != "" {
+		if _, err := ParseByteSize(c.Processing.MinFreeSpace); err != nil {
+			return fmt.Errorf("processing.min_free_space: %w", err)
+		}
 	}
 	if c.Processing.RetryAttempts < 0 {
 		return fmt.Errorf("processing.retry_attempts must be non-negative")

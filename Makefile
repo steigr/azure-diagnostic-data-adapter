@@ -24,7 +24,7 @@ GOLANGCI_LINT_VERSION?=v2.8.0
 .PHONY: all build build-debug clean test test-unit test-e2e test-e2e-ci lint fmt vet run docker docker-push help
 .PHONY: azurite-install azurite-start azurite-stop azurite-check
 .PHONY: tools tools-golangci-lint tools-azurite
-.PHONY: test-manual test-manual-min-age
+.PHONY: test-manual test-manual-min-age test-manual-disk-space
 
 all: clean lint test build ## Clean, lint, test, and build
 
@@ -80,6 +80,10 @@ test-manual: build tools-azurite ## Run manual interactive test with Azurite
 test-manual-min-age: build tools-azurite ## Run min-age test with Azurite
 	@echo "Starting min-age test..."
 	@MIN_AGE_TEST=true MIN_AGE_SECONDS=15 ./scripts/test/manual-test.sh
+
+test-manual-disk-space: build tools-azurite ## Run disk space backoff test with Azurite
+	@echo "Starting disk space backoff test..."
+	@DISK_SPACE_TEST=true ./scripts/test/manual-test.sh
 
 coverage: test-unit ## Show test coverage
 	go tool cover -html=coverage.out -o coverage.html

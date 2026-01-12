@@ -64,6 +64,8 @@ func main() {
 	rootCmd.Flags().Duration("blob-min-age", 0, "Minimum age of blobs to process (e.g., 15s, 5m, 1h)")
 	rootCmd.Flags().Duration("blob-max-age", 0, "Maximum age of blobs to process (e.g., 24h, 168h)")
 	rootCmd.Flags().Duration("poll-interval", time.Minute, "Interval between polling for new blobs (e.g., 30s, 1m, 5m)")
+	rootCmd.Flags().String("min-free-space", "256MiB", "Minimum free disk space (e.g., 1GB, 500MB, 100MiB)")
+	rootCmd.Flags().Bool("backoff-enabled", true, "Enable disk space backoff checking")
 
 	// Metrics flags
 	rootCmd.Flags().Bool("metrics", true, "Enable Prometheus metrics")
@@ -94,6 +96,8 @@ func main() {
 	_ = viper.BindPFlag("processing.min_age", rootCmd.Flags().Lookup("blob-min-age"))
 	_ = viper.BindPFlag("processing.max_age", rootCmd.Flags().Lookup("blob-max-age"))
 	_ = viper.BindPFlag("processing.poll_interval", rootCmd.Flags().Lookup("poll-interval"))
+	_ = viper.BindPFlag("processing.min_free_space", rootCmd.Flags().Lookup("min-free-space"))
+	_ = viper.BindPFlag("processing.backoff_enabled", rootCmd.Flags().Lookup("backoff-enabled"))
 	_ = viper.BindPFlag("metrics.enabled", rootCmd.Flags().Lookup("metrics"))
 	_ = viper.BindPFlag("metrics.address", rootCmd.Flags().Lookup("metrics-address"))
 	_ = viper.BindPFlag("logging.level", rootCmd.Flags().Lookup("log-level"))

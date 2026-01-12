@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"regexp"
 	"sort"
 	"time"
@@ -38,6 +39,7 @@ type Reader struct {
 	client        *azblob.Client
 	containerName string
 	pattern       *regexp.Regexp
+	logger        *slog.Logger
 }
 
 // Config holds the configuration for the blob reader.
@@ -72,6 +74,7 @@ func New(ctx context.Context, cfg Config) (*Reader, error) {
 		client:        client,
 		containerName: cfg.ContainerName,
 		pattern:       pattern,
+		logger:        slog.Default(),
 	}, nil
 }
 
@@ -94,7 +97,15 @@ func NewWithConnectionString(connStr string, containerName string, filePattern s
 		client:        client,
 		containerName: containerName,
 		pattern:       pattern,
+		logger:        slog.Default(),
 	}, nil
+}
+
+// SetLogger sets the logger for the reader.
+func (r *Reader) SetLogger(logger *slog.Logger) {
+	if logger != nil {
+		r.logger = logger
+	}
 }
 
 // ListOptions configures the blob listing behavior.
@@ -112,6 +123,14 @@ func (r *Reader) List(ctx context.Context) ([]BlobInfo, error) {
 
 // ListWithOptions returns a list of blobs with custom options for sorting and limiting.
 func (r *Reader) ListWithOptions(ctx context.Context, opts ListOptions) ([]BlobInfo, error) {
+	r.logger.Debug("listing blobs from container",
+		"container", r.containerName,
+		"sort_order", opts.SortOrder,
+		"limit", opts.Limit,
+		"min_age", opts.MinAge,
+		"max_age", opts.MaxAge,
+	)
+
 	var blobs []BlobInfo
 	now := time.Now()
 

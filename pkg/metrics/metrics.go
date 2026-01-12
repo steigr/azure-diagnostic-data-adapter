@@ -27,6 +27,8 @@ type Metrics struct {
 	PollsTotal         prometheus.Counter
 	PollsWithData      prometheus.Counter
 	PollsEmpty         prometheus.Counter
+	BackoffTotal       prometheus.Counter
+	BackoffActive      prometheus.Gauge
 }
 
 // New creates and registers all metrics. It returns a singleton instance.
@@ -74,6 +76,14 @@ func New() *Metrics {
 				Name: "adda_polls_empty_total",
 				Help: "Number of polls that found no data to process",
 			}),
+			BackoffTotal: promauto.NewCounter(prometheus.CounterOpts{
+				Name: "adda_backoff_total",
+				Help: "Total number of times processing was skipped due to low disk space",
+			}),
+			BackoffActive: promauto.NewGauge(prometheus.GaugeOpts{
+				Name: "adda_backoff_active",
+				Help: "Whether backoff is currently active (1) or not (0)",
+			}),
 		}
 	})
 	return instance
@@ -118,4 +128,15 @@ func (m *Metrics) RecordPoll(foundData bool) {
 	} else {
 		m.PollsEmpty.Inc()
 	}
+}
+
+// RecordBackoff increments the backoff counter and sets backoff active.
+func (m *Metrics) RecordBackoff() {
+	m.BackoffTotal.Inc()
+	m.BackoffActive.Set(1)
+}
+
+// ClearBackoff clears the backoff active gauge.
+func (m *Metrics) ClearBackoff() {
+	m.BackoffActive.Set(0)
 }

@@ -444,3 +444,140 @@ func TestLoad_MissingFile(t *testing.T) {
 		t.Error("Load() expected error for missing file")
 	}
 }
+
+func TestParseByteSize(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    uint64
+		wantErr bool
+	}{
+		// Bytes
+		{"empty string", "", 0, false},
+		{"zero", "0", 0, false},
+		{"bytes implicit", "1024", 1024, false},
+		{"bytes explicit", "1024B", 1024, false},
+		{"bytes lowercase", "1024b", 1024, false},
+
+		// Kilobytes (decimal)
+		{"KB", "1KB", 1000, false},
+		{"KB lowercase", "1kb", 1000, false},
+		{"KB with decimal", "1.5KB", 1500, false},
+
+		// Kibibytes (binary)
+		{"KiB", "1KiB", 1024, false},
+		{"KiB lowercase", "1kib", 1024, false},
+
+		// Megabytes (decimal)
+		{"MB", "1MB", 1000000, false},
+		{"MB lowercase", "1mb", 1000000, false},
+		{"MB with value", "500MB", 500000000, false},
+
+		// Mebibytes (binary)
+		{"MiB", "1MiB", 1048576, false},
+		{"MiB lowercase", "1mib", 1048576, false},
+		{"MiB with value", "100MiB", 104857600, false},
+
+		// Gigabytes (decimal)
+		{"GB", "1GB", 1000000000, false},
+		{"GB lowercase", "1gb", 1000000000, false},
+
+		// Gibibytes (binary)
+		{"GiB", "1GiB", 1073741824, false},
+		{"GiB lowercase", "1gib", 1073741824, false},
+
+		// Terabytes (decimal)
+		{"TB", "1TB", 1000000000000, false},
+
+		// Tebibytes (binary)
+		{"TiB", "1TiB", 1099511627776, false},
+
+		// With spaces
+		{"with leading space", " 1GB", 1000000000, false},
+		{"with trailing space", "1GB ", 1000000000, false},
+
+		// Errors
+		{"invalid format", "abc", 0, true},
+		{"invalid unit", "1XB", 0, true},
+		{"negative not supported", "-1GB", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseByteSize(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseByteSize(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("ParseByteSize(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProcessingConfig_GetMinFreeSpaceBytes(t *testing.T) {
+	tests := []struct {
+		name         string
+		minFreeSpace string
+		want         uint64
+	}{
+		{"1GB", "1GB", 1000000000},
+		{"1GiB", "1GiB", 1073741824},
+		{"500MB", "500MB", 500000000},
+		{"100MiB", "100MiB", 104857600},
+		{"empty returns 0", "", 0},                           // Empty means no minimum
+		{"invalid defaults to 256MiB", "invalid", 268435456}, // Invalid returns default 256MiB
+		{"256MiB", "256MiB", 268435456},                      // Default value
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ProcessingConfig{
+				MinFreeSpace: tt.minFreeSpace,
+			}
+			if got := cfg.GetMinFreeSpaceBytes(); got != tt.want {
+				t.Errorf("GetMinFreeSpaceBytes() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConfig_Validate_MinFreeSpace(t *testing.T) {
+	tests := []struct {
+		name         string
+		minFreeSpace string
+		wantErr      bool
+	}{
+		{"valid GB", "1GB", false},
+		{"valid MB", "500MB", false},
+		{"valid MiB", "100MiB", false},
+		{"valid bytes", "1048576", false},
+		{"empty is valid", "", false},
+		{"invalid format", "invalid", true},
+		{"invalid unit", "1XB", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Source: SourceConfig{
+					StorageAccountName: "test",
+					ContainerName:      "container",
+				},
+				Output: OutputConfig{
+					Directory: ".",
+					Filename:  "output.ndjson",
+				},
+				Processing: ProcessingConfig{
+					Workers:      1,
+					MinFreeSpace: tt.minFreeSpace,
+				},
+			}
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() with MinFreeSpace=%q error = %v, wantErr %v", tt.minFreeSpace, err, tt.wantErr)
+			}
+		})
+	}
+}

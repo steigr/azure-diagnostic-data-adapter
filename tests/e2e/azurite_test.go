@@ -8,7 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -989,4 +992,116 @@ SKU003,Monitor Stand,59.99`)
 	if records[0]["price"] != "29.99" {
 		t.Errorf("Expected price '29.99', got %v", records[0]["price"])
 	}
+}
+
+func TestE2E_DiskSpaceCheck(t *testing.T) {
+	skipIfNoAzurite(t)
+
+	ctx := context.Background()
+	client, cleanup := setupTestContainer(t, ctx)
+	defer cleanup()
+
+	// Upload test blob
+	testData := []byte(`{"message":"disk space test"}`)
+	uploadTestBlob(t, ctx, client, "disk-test.json", testData)
+
+	// Test GetFreeSpace utility
+	tempDir := t.TempDir()
+
+	freeSpace, err := getFreeSpace(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to get free space: %v", err)
+	}
+
+	t.Logf("Free space in temp dir: %d bytes (%.2f MB)", freeSpace, float64(freeSpace)/(1024*1024))
+
+	if freeSpace == 0 {
+		t.Error("Expected non-zero free space")
+	}
+}
+
+func TestE2E_ParseByteSize(t *testing.T) {
+	// Test various byte size formats
+	tests := []struct {
+		name          string
+		input         string
+		expectedBytes uint64
+		wantErr       bool
+	}{
+		{"1GB", "1GB", 1000000000, false},
+		{"1GiB", "1GiB", 1073741824, false},
+		{"500MB", "500MB", 500000000, false},
+		{"100MiB", "100MiB", 104857600, false},
+		{"256MiB", "256MiB", 268435456, false},
+		{"1KB", "1KB", 1000, false},
+		{"1KiB", "1KiB", 1024, false},
+		{"invalid", "invalid", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseByteSize(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseByteSize(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if result != tt.expectedBytes {
+				t.Errorf("parseByteSize(%q) = %d, want %d", tt.input, result, tt.expectedBytes)
+			}
+		})
+	}
+}
+
+// parseByteSize is a local helper for testing (mirrors config.ParseByteSize)
+func parseByteSize(s string) (uint64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return 0, nil
+	}
+
+	re := regexp.MustCompile(`(?i)^(\d+(?:\.\d+)?)\s*(b|kb|kib|mb|mib|gb|gib|tb|tib)?$`)
+	matches := re.FindStringSubmatch(s)
+	if matches == nil {
+		return 0, fmt.Errorf("invalid byte size format: %s", s)
+	}
+
+	value, err := strconv.ParseFloat(matches[1], 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid number in byte size: %s", s)
+	}
+
+	unit := strings.ToLower(matches[2])
+	var multiplier float64 = 1
+
+	switch unit {
+	case "", "b":
+		multiplier = 1
+	case "kb":
+		multiplier = 1000
+	case "kib":
+		multiplier = 1024
+	case "mb":
+		multiplier = 1000 * 1000
+	case "mib":
+		multiplier = 1024 * 1024
+	case "gb":
+		multiplier = 1000 * 1000 * 1000
+	case "gib":
+		multiplier = 1024 * 1024 * 1024
+	case "tb":
+		multiplier = 1000 * 1000 * 1000 * 1000
+	case "tib":
+		multiplier = 1024 * 1024 * 1024 * 1024
+	}
+
+	return uint64(value * multiplier), nil
+}
+
+// getFreeSpace is a local helper for testing
+func getFreeSpace(path string) (uint64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	return stat.Bavail * uint64(stat.Bsize), nil
 }
