@@ -177,7 +177,7 @@ run-dry: build ## Run in dry-run mode
 
 docker: ## Build Docker image
 	@echo "Building Docker image..."
-	$(CONTAINER_TOOL) buildx build -t $(IMAGE_NAME):$(VERSION) --load .
+	$(CONTAINER_TOOL) buildx build --tag=$(IMAGE_NAME):$(VERSION) --load .
 
 docker-push: docker ## Push Docker image
 	@echo "Pushing Docker image..."
