@@ -31,10 +31,18 @@ type Metadata struct {
 	FileName  string   // Base filename (e.g., "data.json")
 	Extension string   // File extension without dot (e.g., "json")
 	PathParts []string // All path components (e.g., ["logs", "app", "2026", "data.json"])
+
+	// FileMatch holds named capture groups from the parser's file_pattern regex
+	FileMatch map[string]string
 }
 
 // NewMetadata creates a Metadata instance with hierarchical path components parsed from blob name.
 func NewMetadata(blobName, containerName, storageAccount string, processedAt time.Time, size int64, contentType string, lastModified time.Time) Metadata {
+	return NewMetadataWithFileMatch(blobName, containerName, storageAccount, processedAt, size, contentType, lastModified, nil)
+}
+
+// NewMetadataWithFileMatch creates a Metadata instance with hierarchical path components and file match data.
+func NewMetadataWithFileMatch(blobName, containerName, storageAccount string, processedAt time.Time, size int64, contentType string, lastModified time.Time, fileMatch map[string]string) Metadata {
 	m := Metadata{
 		BlobName:       blobName,
 		ContainerName:  containerName,
@@ -43,6 +51,12 @@ func NewMetadata(blobName, containerName, storageAccount string, processedAt tim
 		Size:           size,
 		ContentType:    contentType,
 		LastModified:   lastModified,
+		FileMatch:      fileMatch,
+	}
+
+	// Initialize empty map if nil
+	if m.FileMatch == nil {
+		m.FileMatch = make(map[string]string)
 	}
 
 	// Parse hierarchical path components

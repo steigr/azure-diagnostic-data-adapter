@@ -7,8 +7,15 @@ source:
   # Alternatively, use a connection string (not recommended for production)
   # connection_string: "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
   
-  # Blob container name
+  # Single blob container name (can be combined with container_names)
   container_name: "diagnostics"
+  
+  # Multiple blob container names (can be combined with container_name)
+  # Duplicates are automatically removed
+  # container_names:
+  #   - "logs-production"
+  #   - "logs-staging"
+  #   - "logs-development"
   
   # Regex pattern to match blob names (optional)
   file_pattern: ".*\\.json$"
@@ -45,6 +52,12 @@ parsers:
   #   type: "json"
   #   file_pattern: ".*\\.json-array$"
 
+  # Example: Parser with named capture groups for date extraction
+  # Named capture groups (e.g., (?P<year>\d{4})) are available in enrichment templates via .Metadata.FileMatch
+  # - id: "logs-with-date"
+  #   type: "ndjson"
+  #   file_pattern: "logs/(?P<year>\\d{4})/(?P<month>\\d{2})/(?P<day>\\d{2})/.*\\.json$"
+
   # Example: Parser for log files
   # - id: "logs"
   #   type: "ndjson"
@@ -73,6 +86,12 @@ parsers:
 #   .Metadata.FileName   - Base filename (e.g., "data.json")
 #   .Metadata.Extension  - File extension without dot (e.g., "json")
 #   .Metadata.PathParts  - Array of path components (e.g., ["logs", "app", "2026", "data.json"])
+#
+# FileMatch fields (from parser file_pattern named capture groups):
+#   .Metadata.FileMatch  - Map of capture group names to values
+#   Example: With file_pattern "logs/(?P<year>\d{4})/(?P<month>\d{2})/.*\.json$"
+#            and blob name "logs/2026/01/data.json"
+#            .Metadata.FileMatch["year"] = "2026", .Metadata.FileMatch["month"] = "01"
 #
 # Path helper functions:
 #   pathDir <path>         - Get directory portion of path

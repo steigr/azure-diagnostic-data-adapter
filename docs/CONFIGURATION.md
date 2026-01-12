@@ -31,8 +31,14 @@ source:
   # Alternatively, use a connection string
   connection_string: "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=..."
   
-  # Blob container name (required)
+  # Single blob container name
   container_name: "diagnostics"
+  
+  # Multiple blob container names (can be combined with container_name)
+  container_names:
+    - "logs-production"
+    - "logs-staging"
+    - "logs-development"
   
   # Regex pattern to filter blobs (optional)
   file_pattern: ".*\\.json$"
@@ -42,8 +48,11 @@ source:
 |-------|----------|---------------------|---------|-------------|
 | `storage_account_name` | `--storage-account` | `ADDA_SOURCE_STORAGE_ACCOUNT_NAME` | - | Azure Storage Account name |
 | `connection_string` | `--connection-string` | `ADDA_SOURCE_CONNECTION_STRING` | - | Azure Storage connection string |
-| `container_name` | `--container` | `ADDA_SOURCE_CONTAINER_NAME` | - | Blob container name |
+| `container_name` | `--container` | `ADDA_SOURCE_CONTAINER_NAME` | - | Single blob container name |
+| `container_names` | - | `ADDA_SOURCE_CONTAINER_NAMES` | - | Multiple blob container names |
 | `file_pattern` | `--file-pattern` | `ADDA_SOURCE_FILE_PATTERN` | - | Regex pattern for blob filtering |
+
+**Note:** You can use both `container_name` and `container_names` together. The adapter will process all unique container names, removing any duplicates.
 
 ### Output Configuration
 
@@ -91,6 +100,12 @@ parsers:
     type: "json"
     file_pattern: ".*\\.json-array$"
   
+  # Parser with named capture groups for date extraction
+  # Named groups are available in enrichment templates via .Metadata.FileMatch
+  - id: "logs-with-date"
+    type: "ndjson"
+    file_pattern: "logs/(?P<year>\\d{4})/(?P<month>\\d{2})/(?P<day>\\d{2})/.*\\.json$"
+  
   # External parser (file mode)
   - id: "csv"
     type: "external"
@@ -114,12 +129,38 @@ parsers:
 |-------|------|-------------|
 | `id` | string | Unique identifier for the parser |
 | `type` | string | Parser type: `ndjson`, `json`, or `external` |
-| `file_pattern` | string | Regex pattern to match blob names (case-insensitive) |
+| `file_pattern` | string | Regex pattern to match blob names (case-insensitive). Named capture groups (e.g., `(?P<name>pattern)`) are extracted and available via `.Metadata.FileMatch` in enrichment templates. |
 | `command` | string | External command to run (for `external` type) |
 | `args` | []string | Command arguments |
 | `env` | map[string]string | Additional environment variables |
 | `stdin` | bool | Read input from stdin (external parser) |
 | `stdout` | bool | Write output to stdout (external parser) |
+
+#### Named Capture Groups
+
+You can use named capture groups in the `file_pattern` regex to extract values from blob paths. These values are then available in the enrichment template via `.Metadata.FileMatch`.
+
+**Example:**
+```yaml
+parsers:
+  - id: "dated-logs"
+    type: "ndjson"
+    file_pattern: "logs/(?P<year>\\d{4})/(?P<month>\\d{2})/(?P<day>\\d{2})/(?P<service>[^/]+)/.*\\.json$"
+
+enrichment_template: |
+  {
+    "log_date": "{{ index .Metadata.FileMatch "year" }}-{{ index .Metadata.FileMatch "month" }}-{{ index .Metadata.FileMatch "day" }}",
+    "service": "{{ index .Metadata.FileMatch "service" }}"
+  }
+```
+
+For a blob named `logs/2026/01/12/api-gateway/events.json`, this would produce:
+```json
+{
+  "log_date": "2026-01-12",
+  "service": "api-gateway"
+}
+```
 
 ### Processing Configuration
 

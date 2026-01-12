@@ -14,6 +14,10 @@ func (m *mockParser) Parse(input io.Reader) ([]map[string]any, error) {
 	return nil, nil
 }
 
+func (m *mockParser) MatchResult(blobName string) map[string]string {
+	return m.BaseParser.MatchResult(blobName)
+}
+
 func newMockParser(id, pattern string) (*mockParser, error) {
 	base, err := NewBaseParser(id, pattern)
 	if err != nil {
@@ -139,5 +143,86 @@ func TestRegistry_List(t *testing.T) {
 	ids := registry.List()
 	if len(ids) != 2 {
 		t.Errorf("List() returned %d IDs, want 2", len(ids))
+	}
+}
+
+func TestBaseParser_MatchResult(t *testing.T) {
+	tests := []struct {
+		name        string
+		filePattern string
+		blobName    string
+		want        map[string]string
+	}{
+		{
+			name:        "no pattern returns empty map",
+			filePattern: "",
+			blobName:    "anything.txt",
+			want:        map[string]string{},
+		},
+		{
+			name:        "pattern without capture groups returns empty map",
+			filePattern: `.*\.json$`,
+			blobName:    "data.json",
+			want:        map[string]string{},
+		},
+		{
+			name:        "named capture groups are extracted",
+			filePattern: `logs/(?P<year>\d{4})/(?P<month>\d{2})/(?P<day>\d{2})/.*\.json$`,
+			blobName:    "logs/2026/01/12/data.json",
+			want: map[string]string{
+				"year":  "2026",
+				"month": "01",
+				"day":   "12",
+			},
+		},
+		{
+			name:        "partial match extracts available groups",
+			filePattern: `(?P<container>[^/]+)/(?P<filename>[^/]+)\.json$`,
+			blobName:    "mycontainer/myfile.json",
+			want: map[string]string{
+				"container": "mycontainer",
+				"filename":  "myfile",
+			},
+		},
+		{
+			name:        "non-matching pattern returns empty map",
+			filePattern: `logs/(?P<year>\d{4})/.*\.json$`,
+			blobName:    "data.txt",
+			want:        map[string]string{},
+		},
+		{
+			name:        "case-insensitive matching with capture groups",
+			filePattern: `logs/(?P<type>[^/]+)/.*\.json$`,
+			blobName:    "LOGS/ERROR/data.json",
+			want: map[string]string{
+				"type": "ERROR",
+			},
+		},
+		{
+			name:        "mixed named and unnamed groups",
+			filePattern: `logs/(\d{4})/(?P<month>\d{2})/.*\.json$`,
+			blobName:    "logs/2026/01/data.json",
+			want: map[string]string{
+				"month": "01",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base, err := NewBaseParser("test", tt.filePattern)
+			if err != nil {
+				t.Fatalf("NewBaseParser() error = %v", err)
+			}
+			got := base.MatchResult(tt.blobName)
+			if len(got) != len(tt.want) {
+				t.Errorf("MatchResult() returned %d entries, want %d", len(got), len(tt.want))
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("MatchResult()[%s] = %v, want %v", k, got[k], v)
+				}
+			}
+		})
 	}
 }

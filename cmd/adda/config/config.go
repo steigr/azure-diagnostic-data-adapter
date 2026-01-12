@@ -41,10 +41,34 @@ type Config struct {
 
 // SourceConfig holds Azure Storage Account configuration.
 type SourceConfig struct {
-	StorageAccountName string `mapstructure:"storage_account_name"`
-	ContainerName      string `mapstructure:"container_name"`
-	FilePattern        string `mapstructure:"file_pattern"`
-	ConnectionString   string `mapstructure:"connection_string"`
+	StorageAccountName string   `mapstructure:"storage_account_name"`
+	ContainerName      string   `mapstructure:"container_name"`
+	ContainerNames     []string `mapstructure:"container_names"`
+	FilePattern        string   `mapstructure:"file_pattern"`
+	ConnectionString   string   `mapstructure:"connection_string"`
+}
+
+// GetContainerNames returns all container names to process.
+// It merges container_name (singular) with container_names (plural).
+func (c *SourceConfig) GetContainerNames() []string {
+	seen := make(map[string]bool)
+	var result []string
+
+	// Add singular container_name first if set
+	if c.ContainerName != "" && !seen[c.ContainerName] {
+		seen[c.ContainerName] = true
+		result = append(result, c.ContainerName)
+	}
+
+	// Add all container_names
+	for _, name := range c.ContainerNames {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			result = append(result, name)
+		}
+	}
+
+	return result
 }
 
 // OutputConfig holds output file configuration.
@@ -231,8 +255,8 @@ func (c *Config) Validate() error {
 	if c.Source.StorageAccountName == "" && c.Source.ConnectionString == "" {
 		return fmt.Errorf("source.storage_account_name or source.connection_string is required")
 	}
-	if c.Source.ContainerName == "" {
-		return fmt.Errorf("source.container_name is required")
+	if len(c.Source.GetContainerNames()) == 0 {
+		return fmt.Errorf("source.container_name or source.container_names is required")
 	}
 
 	// Validate output

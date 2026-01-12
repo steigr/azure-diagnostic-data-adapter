@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -25,7 +26,7 @@ import (
 // Processor orchestrates the blob processing pipeline.
 type Processor struct {
 	cfg      *config.Config
-	reader   *reader.Reader
+	readers  []*reader.Reader // One reader per container
 	parsers  *parser.Registry
 	enricher *enricher.Enricher
 	writer   *writer.Writer
@@ -35,28 +36,40 @@ type Processor struct {
 
 // New creates a new Processor.
 func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Processor, error) {
-	// Create reader
-	var r *reader.Reader
-	var err error
-	if cfg.Source.ConnectionString != "" {
-		r, err = reader.NewWithConnectionString(
-			cfg.Source.ConnectionString,
-			cfg.Source.ContainerName,
-			cfg.Source.FilePattern,
-		)
-	} else {
-		r, err = reader.New(ctx, reader.Config{
-			StorageAccountName: cfg.Source.StorageAccountName,
-			ContainerName:      cfg.Source.ContainerName,
-			FilePattern:        cfg.Source.FilePattern,
-		})
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to create reader: %w", err)
+	// Get all container names to process
+	containerNames := cfg.Source.GetContainerNames()
+	if len(containerNames) == 0 {
+		return nil, fmt.Errorf("no container names configured")
 	}
 
-	// Set logger for the reader
-	r.SetLogger(logger)
+	// Create readers for each container
+	var readers []*reader.Reader
+	for _, containerName := range containerNames {
+		var r *reader.Reader
+		var err error
+		if cfg.Source.ConnectionString != "" {
+			r, err = reader.NewWithConnectionString(
+				cfg.Source.ConnectionString,
+				containerName,
+				cfg.Source.FilePattern,
+			)
+		} else {
+			r, err = reader.New(ctx, reader.Config{
+				StorageAccountName: cfg.Source.StorageAccountName,
+				ContainerName:      containerName,
+				FilePattern:        cfg.Source.FilePattern,
+			})
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to create reader for container %s: %w", containerName, err)
+		}
+
+		// Set logger for the reader
+		r.SetLogger(logger)
+		readers = append(readers, r)
+	}
+
+	logger.Info("created readers for containers", "containers", containerNames, "count", len(readers))
 
 	// Create parser registry
 	parsers := parser.NewRegistry()
@@ -115,7 +128,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 
 	proc := &Processor{
 		cfg:      cfg,
-		reader:   r,
+		readers:  readers,
 		parsers:  parsers,
 		enricher: e,
 		writer:   w,
@@ -279,30 +292,40 @@ func (p *Processor) DryRun(ctx context.Context) error {
 	p.logger.Info("=== DRY RUN MODE ===")
 	p.logger.Info("listing blobs from storage",
 		"storage_account", p.cfg.Source.StorageAccountName,
-		"container", p.cfg.Source.ContainerName,
+		"containers", p.cfg.Source.GetContainerNames(),
 		"file_pattern", p.cfg.Source.FilePattern,
 	)
-
-	// List blobs
-	blobs, err := p.reader.List(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list blobs: %w", err)
-	}
-
-	if len(blobs) == 0 {
-		p.logger.Info("no blobs found matching the pattern")
-		return nil
-	}
-
-	p.logger.Info("found blobs", "count", len(blobs))
 
 	// Show available parsers
 	p.logger.Info("configured parsers", "parsers", p.parsers.List())
 
-	// Process each blob in dry-run mode
-	for _, blob := range blobs {
-		p.dryRunBlob(blob)
+	totalBlobs := 0
+	for _, rdr := range p.readers {
+		containerName := rdr.GetContainerName()
+		p.logger.Info("checking container", "container", containerName)
+
+		// List blobs
+		blobs, err := rdr.List(ctx)
+		if err != nil {
+			p.logger.Error("failed to list blobs", "container", containerName, "error", err)
+			continue
+		}
+
+		if len(blobs) == 0 {
+			p.logger.Info("no blobs found matching the pattern", "container", containerName)
+			continue
+		}
+
+		p.logger.Info("found blobs in container", "container", containerName, "count", len(blobs))
+		totalBlobs += len(blobs)
+
+		// Process each blob in dry-run mode
+		for _, blob := range blobs {
+			p.dryRunBlob(blob, containerName)
+		}
 	}
+
+	p.logger.Info("total blobs found", "count", totalBlobs)
 
 	// Show enrichment template preview
 	p.showEnrichmentPreview()
@@ -320,12 +343,13 @@ func (p *Processor) DryRun(ctx context.Context) error {
 	return nil
 }
 
-func (p *Processor) dryRunBlob(blob reader.BlobInfo) {
+func (p *Processor) dryRunBlob(blob reader.BlobInfo, containerName string) {
 	// Find matching parser
 	psr, ok := p.parsers.FindMatching(blob.Name)
 
 	if !ok {
 		p.logger.Warn("blob has no matching parser",
+			"container", containerName,
 			"blob", blob.Name,
 			"size", blob.Size,
 			"content_type", blob.ContentType,
@@ -334,13 +358,23 @@ func (p *Processor) dryRunBlob(blob reader.BlobInfo) {
 		return
 	}
 
-	p.logger.Info("blob would be processed",
+	// Get file match capture groups
+	fileMatch := psr.MatchResult(blob.Name)
+
+	logFields := []any{
+		"container", containerName,
 		"blob", blob.Name,
 		"size", blob.Size,
 		"content_type", blob.ContentType,
 		"last_modified", blob.LastModified,
 		"parser", psr.ID(),
-	)
+	}
+
+	if len(fileMatch) > 0 {
+		logFields = append(logFields, "file_match", fileMatch)
+	}
+
+	p.logger.Info("blob would be processed", logFields...)
 }
 
 func (p *Processor) showEnrichmentPreview() {
@@ -349,15 +383,30 @@ func (p *Processor) showEnrichmentPreview() {
 		return
 	}
 
-	// Create sample metadata for preview using NewMetadata for proper path parsing
-	sampleMetadata := enricher.NewMetadata(
+	// Get container name for preview (use first container)
+	containerNames := p.cfg.Source.GetContainerNames()
+	containerName := ""
+	if len(containerNames) > 0 {
+		containerName = containerNames[0]
+	}
+
+	// Create sample file match for preview
+	sampleFileMatch := map[string]string{
+		"year":  "2026",
+		"month": "01",
+		"day":   "12",
+	}
+
+	// Create sample metadata for preview using NewMetadataWithFileMatch for proper path parsing
+	sampleMetadata := enricher.NewMetadataWithFileMatch(
 		"example/path/sample-file.json",
-		p.cfg.Source.ContainerName,
+		containerName,
 		p.cfg.Source.StorageAccountName,
 		time.Now(),
 		1024,
 		"application/json",
 		time.Now().Add(-1*time.Hour), // Sample: 1 hour ago
+		sampleFileMatch,
 	)
 
 	// Create sample record
@@ -387,6 +436,7 @@ func (p *Processor) showEnrichmentPreview() {
 			"file_name":       sampleMetadata.FileName,
 			"extension":       sampleMetadata.Extension,
 			"path_parts":      sampleMetadata.PathParts,
+			"file_match":      sampleMetadata.FileMatch,
 		},
 		"enriched_record", enriched,
 	)
@@ -394,6 +444,12 @@ func (p *Processor) showEnrichmentPreview() {
 
 func (p *Processor) processOnce(ctx context.Context) error {
 	return p.processOnceWithLimit(ctx, p.cfg.Processing.BatchLimit)
+}
+
+// blobWithReader associates a blob with its reader for processing
+type blobWithReader struct {
+	blob   reader.BlobInfo
+	reader *reader.Reader
 }
 
 func (p *Processor) processOnceWithLimit(ctx context.Context, limit int) error {
@@ -408,29 +464,51 @@ func (p *Processor) processOnceWithLimit(ctx context.Context, limit int) error {
 		sortOrder = reader.SortNewestFirst
 	}
 
-	// List blobs with options
-	blobs, err := p.reader.ListWithOptions(ctx, reader.ListOptions{
-		SortOrder: sortOrder,
-		Limit:     limit,
-		MinAge:    p.cfg.Processing.MinAge,
-		MaxAge:    p.cfg.Processing.MaxAge,
-	})
-	if err != nil {
-		p.metrics.RecordPoll(false)
-		return fmt.Errorf("failed to list blobs: %w", err)
+	// Collect blobs from all readers
+	var allBlobs []blobWithReader
+	for _, rdr := range p.readers {
+		blobs, err := rdr.ListWithOptions(ctx, reader.ListOptions{
+			SortOrder: sortOrder,
+			Limit:     0, // Don't limit per-container, we'll limit total
+			MinAge:    p.cfg.Processing.MinAge,
+			MaxAge:    p.cfg.Processing.MaxAge,
+		})
+		if err != nil {
+			p.logger.Error("failed to list blobs", "container", rdr.GetContainerName(), "error", err)
+			continue
+		}
+		for _, blob := range blobs {
+			allBlobs = append(allBlobs, blobWithReader{blob: blob, reader: rdr})
+		}
 	}
 
 	// Record poll metrics
-	foundData := len(blobs) > 0
+	foundData := len(allBlobs) > 0
 	p.metrics.RecordPoll(foundData)
 
-	if len(blobs) == 0 {
+	if len(allBlobs) == 0 {
 		p.logger.Debug("no blobs to process")
 		return nil
 	}
 
+	// Sort all blobs by last modified time
+	if sortOrder == reader.SortNewestFirst {
+		sort.Slice(allBlobs, func(i, j int) bool {
+			return allBlobs[i].blob.LastModified.After(allBlobs[j].blob.LastModified)
+		})
+	} else {
+		sort.Slice(allBlobs, func(i, j int) bool {
+			return allBlobs[i].blob.LastModified.Before(allBlobs[j].blob.LastModified)
+		})
+	}
+
+	// Apply limit if specified
+	if limit > 0 && len(allBlobs) > limit {
+		allBlobs = allBlobs[:limit]
+	}
+
 	p.logger.Info("found blobs to process",
-		"count", len(blobs),
+		"count", len(allBlobs),
 		"sort_order", p.cfg.Processing.SortOrder,
 		"limit", limit,
 		"min_age", p.cfg.Processing.MinAge,
@@ -440,25 +518,25 @@ func (p *Processor) processOnceWithLimit(ctx context.Context, limit int) error {
 	// Process blobs
 	if p.cfg.Processing.Workers <= 1 {
 		// Sequential processing
-		for _, blob := range blobs {
-			if err := p.processBlob(ctx, blob); err != nil {
-				p.logger.Error("failed to process blob", "blob", blob.Name, "error", err)
+		for _, bwr := range allBlobs {
+			if err := p.processBlob(ctx, bwr.blob, bwr.reader); err != nil {
+				p.logger.Error("failed to process blob", "container", bwr.reader.GetContainerName(), "blob", bwr.blob.Name, "error", err)
 				p.metrics.RecordBlobFailed()
 			}
 		}
 	} else {
 		// Parallel processing
-		p.processParallel(ctx, blobs)
+		p.processParallel(ctx, allBlobs)
 	}
 
 	return nil
 }
 
-func (p *Processor) processParallel(ctx context.Context, blobs []reader.BlobInfo) {
+func (p *Processor) processParallel(ctx context.Context, blobs []blobWithReader) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, p.cfg.Processing.Workers)
 
-	for _, blob := range blobs {
+	for _, bwr := range blobs {
 		select {
 		case <-ctx.Done():
 			return
@@ -466,26 +544,27 @@ func (p *Processor) processParallel(ctx context.Context, blobs []reader.BlobInfo
 		}
 
 		wg.Add(1)
-		go func(b reader.BlobInfo) {
+		go func(b blobWithReader) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			if err := p.processBlob(ctx, b); err != nil {
-				p.logger.Error("failed to process blob", "blob", b.Name, "error", err)
+			if err := p.processBlob(ctx, b.blob, b.reader); err != nil {
+				p.logger.Error("failed to process blob", "container", b.reader.GetContainerName(), "blob", b.blob.Name, "error", err)
 				p.metrics.RecordBlobFailed()
 			}
-		}(blob)
+		}(bwr)
 	}
 
 	wg.Wait()
 }
 
-func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo) error {
+func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo, rdr *reader.Reader) error {
 	start := time.Now()
-	p.logger.Debug("processing blob", "name", blob.Name, "size", blob.Size)
+	containerName := rdr.GetContainerName()
+	p.logger.Debug("processing blob", "container", containerName, "name", blob.Name, "size", blob.Size)
 
 	// Download blob
-	data, size, err := p.reader.Download(ctx, blob.Name)
+	data, size, err := rdr.Download(ctx, blob.Name)
 	if err != nil {
 		return fmt.Errorf("failed to download blob: %w", err)
 	}
@@ -500,11 +579,11 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo) error
 	// Find a parser that matches the blob name
 	psr, ok := p.parsers.FindMatching(blob.Name)
 	if !ok {
-		p.logger.Debug("no matching parser for blob", "name", blob.Name)
+		p.logger.Debug("no matching parser for blob", "container", containerName, "name", blob.Name)
 		return nil
 	}
 
-	p.logger.Debug("using parser", "parser", psr.ID(), "blob", blob.Name)
+	p.logger.Debug("using parser", "parser", psr.ID(), "container", containerName, "blob", blob.Name)
 
 	p.metrics.SetActiveParsers(1)
 	defer p.metrics.SetActiveParsers(0)
@@ -516,19 +595,23 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo) error
 	}
 
 	if len(records) == 0 {
-		p.logger.Debug("no records parsed from blob", "name", blob.Name)
+		p.logger.Debug("no records parsed from blob", "container", containerName, "name", blob.Name)
 		return nil
 	}
 
-	// Enrich records
-	metadata := enricher.NewMetadata(
+	// Get file match capture groups from parser
+	fileMatch := psr.MatchResult(blob.Name)
+
+	// Enrich records with file match data
+	metadata := enricher.NewMetadataWithFileMatch(
 		blob.Name,
-		p.reader.GetContainerName(),
+		containerName,
 		p.cfg.Source.StorageAccountName,
 		time.Now(),
 		size,
 		blob.ContentType,
 		blob.LastModified,
+		fileMatch,
 	)
 
 	enrichedRecords, err := p.enricher.EnrichBatch(records, metadata)
@@ -546,10 +629,10 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo) error
 
 	// Delete blob if configured
 	if p.cfg.Processing.DeleteAfterProcess {
-		if err := p.reader.Delete(ctx, blob.Name); err != nil {
+		if err := rdr.Delete(ctx, blob.Name); err != nil {
 			return fmt.Errorf("failed to delete blob: %w", err)
 		}
-		p.logger.Debug("deleted blob", "name", blob.Name)
+		p.logger.Debug("deleted blob", "container", containerName, "name", blob.Name)
 	}
 
 	// Record metrics
@@ -558,6 +641,7 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo) error
 	p.metrics.RecordBlobProcessed(size)
 
 	p.logger.Info("processed blob",
+		"container", containerName,
 		"name", blob.Name,
 		"records", len(enrichedRecords),
 		"duration", elapsed,

@@ -16,6 +16,10 @@ type Parser interface {
 
 	// Matches checks if this parser should be used for the given blob name.
 	Matches(blobName string) bool
+
+	// MatchResult extracts named capture groups from the blob name.
+	// Returns a map of capture group names to their matched values.
+	MatchResult(blobName string) map[string]string
 }
 
 // Config holds the configuration for a parser.
@@ -112,4 +116,28 @@ func (b *BaseParser) Matches(blobName string) bool {
 		return true
 	}
 	return b.pattern.MatchString(blobName)
+}
+
+// MatchResult extracts named capture groups from the blob name using the file pattern.
+// Returns a map of capture group names to their matched values.
+// If no pattern is configured or the pattern doesn't match, returns an empty map.
+func (b *BaseParser) MatchResult(blobName string) map[string]string {
+	result := make(map[string]string)
+	if b.pattern == nil {
+		return result
+	}
+
+	match := b.pattern.FindStringSubmatch(blobName)
+	if match == nil {
+		return result
+	}
+
+	names := b.pattern.SubexpNames()
+	for i, name := range names {
+		if i > 0 && name != "" && i < len(match) {
+			result[name] = match[i]
+		}
+	}
+
+	return result
 }

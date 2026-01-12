@@ -287,3 +287,80 @@ func TestEnricher_PathFunctions(t *testing.T) {
 		t.Errorf("result[joined] = %v, want logs/2026/newfile.json", result["joined"])
 	}
 }
+
+func TestEnricher_FileMatch(t *testing.T) {
+	tmpl := `{
+		"year": "{{ index .Metadata.FileMatch "year" }}",
+		"month": "{{ index .Metadata.FileMatch "month" }}",
+		"day": "{{ index .Metadata.FileMatch "day" }}"
+	}`
+	e, err := New(tmpl)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	record := map[string]any{"key": "value"}
+	fileMatch := map[string]string{
+		"year":  "2026",
+		"month": "01",
+		"day":   "12",
+	}
+	metadata := NewMetadataWithFileMatch("logs/2026/01/12/data.json", "container", "account", time.Now(), 100, "application/json", time.Now(), fileMatch)
+
+	result, err := e.Enrich(record, metadata)
+	if err != nil {
+		t.Fatalf("Enrich() error = %v", err)
+	}
+
+	if result["year"] != "2026" {
+		t.Errorf("result[year] = %v, want 2026", result["year"])
+	}
+	if result["month"] != "01" {
+		t.Errorf("result[month] = %v, want 01", result["month"])
+	}
+	if result["day"] != "12" {
+		t.Errorf("result[day] = %v, want 12", result["day"])
+	}
+}
+
+func TestNewMetadataWithFileMatch(t *testing.T) {
+	fileMatch := map[string]string{
+		"type": "error",
+		"id":   "12345",
+	}
+	m := NewMetadataWithFileMatch("logs/error/12345.json", "container", "account", time.Now(), 100, "application/json", time.Now(), fileMatch)
+
+	if len(m.FileMatch) != 2 {
+		t.Errorf("FileMatch length = %d, want 2", len(m.FileMatch))
+	}
+	if m.FileMatch["type"] != "error" {
+		t.Errorf("FileMatch[type] = %v, want error", m.FileMatch["type"])
+	}
+	if m.FileMatch["id"] != "12345" {
+		t.Errorf("FileMatch[id] = %v, want 12345", m.FileMatch["id"])
+	}
+}
+
+func TestNewMetadataWithFileMatch_NilMap(t *testing.T) {
+	m := NewMetadataWithFileMatch("logs/data.json", "container", "account", time.Now(), 100, "application/json", time.Now(), nil)
+
+	// Should have empty map, not nil
+	if m.FileMatch == nil {
+		t.Error("FileMatch should not be nil when passed nil")
+	}
+	if len(m.FileMatch) != 0 {
+		t.Errorf("FileMatch length = %d, want 0", len(m.FileMatch))
+	}
+}
+
+func TestNewMetadata_HasEmptyFileMatch(t *testing.T) {
+	m := NewMetadata("logs/data.json", "container", "account", time.Now(), 100, "application/json", time.Now())
+
+	// Should have empty map, not nil
+	if m.FileMatch == nil {
+		t.Error("FileMatch should not be nil")
+	}
+	if len(m.FileMatch) != 0 {
+		t.Errorf("FileMatch length = %d, want 0", len(m.FileMatch))
+	}
+}

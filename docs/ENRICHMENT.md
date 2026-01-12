@@ -37,6 +37,21 @@ These fields are automatically parsed from the blob name:
 | `.Metadata.Extension` | `string` | File extension (no dot) | `json` |
 | `.Metadata.PathParts` | `[]string` | All path components | `["logs", "app", "2026", "data.json"]` |
 
+### FileMatch Fields
+
+Named capture groups from the parser's `file_pattern` regex are available via `.Metadata.FileMatch`:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `.Metadata.FileMatch` | `map[string]string` | Map of capture group names to their matched values |
+
+**Example:** With parser file_pattern `logs/(?P<year>\d{4})/(?P<month>\d{2})/.*\.json$` and blob name `logs/2026/01/data.json`:
+
+| Expression | Value |
+|------------|-------|
+| `{{ index .Metadata.FileMatch "year" }}` | `2026` |
+| `{{ index .Metadata.FileMatch "month" }}` | `01` |
+
 ## Template Functions
 
 ### Built-in Functions
@@ -165,6 +180,48 @@ enrichment_template: |
     }
   }
 ```
+
+### Using FileMatch with Named Capture Groups
+
+When your parser's `file_pattern` contains named capture groups, you can access them via `.Metadata.FileMatch`:
+
+**Parser configuration:**
+```yaml
+parsers:
+  - id: "dated-logs"
+    type: "ndjson"
+    file_pattern: "logs/(?P<environment>[^/]+)/(?P<year>\\d{4})/(?P<month>\\d{2})/(?P<day>\\d{2})/(?P<service>[^/]+)/.*\\.json$"
+```
+
+**Enrichment template:**
+```yaml
+enrichment_template: |
+  {
+    "_routing": {
+      "environment": "{{ index .Metadata.FileMatch "environment" }}",
+      "date": "{{ index .Metadata.FileMatch "year" }}-{{ index .Metadata.FileMatch "month" }}-{{ index .Metadata.FileMatch "day" }}",
+      "service": "{{ index .Metadata.FileMatch "service" }}"
+    }
+  }
+```
+
+**For blob:** `logs/production/2026/01/12/api-gateway/events.json`
+
+**Output:**
+```json
+{
+  "_routing": {
+    "environment": "production",
+    "date": "2026-01-12",
+    "service": "api-gateway"
+  }
+}
+```
+
+This is particularly useful for:
+- Extracting date components from path-based organization
+- Identifying environments, services, or regions from blob paths
+- Building dynamic routing or indexing keys
 
 ### Conditional Enrichment
 

@@ -581,3 +581,138 @@ func TestConfig_Validate_MinFreeSpace(t *testing.T) {
 		})
 	}
 }
+
+func TestSourceConfig_GetContainerNames(t *testing.T) {
+	tests := []struct {
+		name           string
+		containerName  string
+		containerNames []string
+		want           []string
+	}{
+		{
+			name:           "single container_name",
+			containerName:  "container1",
+			containerNames: nil,
+			want:           []string{"container1"},
+		},
+		{
+			name:           "multiple container_names",
+			containerName:  "",
+			containerNames: []string{"container1", "container2", "container3"},
+			want:           []string{"container1", "container2", "container3"},
+		},
+		{
+			name:           "both singular and plural",
+			containerName:  "primary",
+			containerNames: []string{"secondary", "tertiary"},
+			want:           []string{"primary", "secondary", "tertiary"},
+		},
+		{
+			name:           "duplicates are removed",
+			containerName:  "container1",
+			containerNames: []string{"container1", "container2"},
+			want:           []string{"container1", "container2"},
+		},
+		{
+			name:           "empty strings are ignored",
+			containerName:  "container1",
+			containerNames: []string{"", "container2", ""},
+			want:           []string{"container1", "container2"},
+		},
+		{
+			name:           "all duplicates",
+			containerName:  "same",
+			containerNames: []string{"same", "same", "same"},
+			want:           []string{"same"},
+		},
+		{
+			name:           "no containers",
+			containerName:  "",
+			containerNames: nil,
+			want:           []string{},
+		},
+		{
+			name:           "only empty strings in plural",
+			containerName:  "",
+			containerNames: []string{"", "", ""},
+			want:           []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := SourceConfig{
+				ContainerName:  tt.containerName,
+				ContainerNames: tt.containerNames,
+			}
+			got := cfg.GetContainerNames()
+			if len(got) != len(tt.want) {
+				t.Errorf("GetContainerNames() returned %d items, want %d", len(got), len(tt.want))
+				return
+			}
+			for i, name := range got {
+				if name != tt.want[i] {
+					t.Errorf("GetContainerNames()[%d] = %v, want %v", i, name, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestConfig_Validate_MultipleContainers(t *testing.T) {
+	tests := []struct {
+		name           string
+		containerName  string
+		containerNames []string
+		wantErr        bool
+	}{
+		{
+			name:          "valid with singular",
+			containerName: "container1",
+			wantErr:       false,
+		},
+		{
+			name:           "valid with plural",
+			containerNames: []string{"container1", "container2"},
+			wantErr:        false,
+		},
+		{
+			name:           "valid with both",
+			containerName:  "primary",
+			containerNames: []string{"secondary"},
+			wantErr:        false,
+		},
+		{
+			name:    "invalid with neither",
+			wantErr: true,
+		},
+		{
+			name:           "invalid with only empty strings",
+			containerNames: []string{"", ""},
+			wantErr:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Source: SourceConfig{
+					StorageAccountName: "test",
+					ContainerName:      tt.containerName,
+					ContainerNames:     tt.containerNames,
+				},
+				Output: OutputConfig{
+					Directory: ".",
+					Filename:  "output.ndjson",
+				},
+				Processing: ProcessingConfig{
+					Workers: 1,
+				},
+			}
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
