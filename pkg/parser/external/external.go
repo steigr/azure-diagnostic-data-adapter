@@ -32,15 +32,16 @@ type Parser struct {
 
 // Config holds configuration for the external parser.
 type Config struct {
-	ID          string
-	FilePattern string
-	Command     string
-	Args        []string
-	Env         map[string]string
-	Timeout     time.Duration
-	TempDir     string
-	Stdin       bool // If true, input is provided via stdin instead of INPUT_FILE
-	Stdout      bool // If true, output is read from stdout instead of OUTPUT_FILE
+	ID               string
+	FilePattern      string
+	Command          string
+	Args             []string
+	Env              map[string]string
+	Timeout          time.Duration
+	TempDir          string
+	Stdin            bool    // If true, input is provided via stdin instead of INPUT_FILE
+	Stdout           bool    // If true, output is read from stdout instead of OUTPUT_FILE
+	DataGrowthFactor float64 // Estimated output/input size ratio (default: 1.0)
 }
 
 // New creates a new external parser.
@@ -51,7 +52,7 @@ func New(cfg Config) (*Parser, error) {
 	if cfg.TempDir == "" {
 		cfg.TempDir = os.TempDir()
 	}
-	base, err := parser.NewBaseParser(cfg.ID, cfg.FilePattern)
+	base, err := parser.NewBaseParserWithGrowthFactor(cfg.ID, cfg.FilePattern, cfg.DataGrowthFactor)
 	if err != nil {
 		return nil, fmt.Errorf("invalid file pattern: %w", err)
 	}

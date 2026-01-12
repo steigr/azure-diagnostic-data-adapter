@@ -78,14 +78,14 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 		var err error
 		switch pcfg.Type {
 		case "ndjson":
-			np, err := ndjsonparser.New(pcfg.ID, pcfg.FilePattern)
+			np, err := ndjsonparser.NewWithGrowthFactor(pcfg.ID, pcfg.FilePattern, pcfg.DataGrowthFactor)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create ndjson parser %s: %w", pcfg.ID, err)
 			}
 			np.SetLogger(logger)
 			p = np
 		case "json":
-			jp, err := jsonparser.New(pcfg.ID, pcfg.FilePattern)
+			jp, err := jsonparser.NewWithGrowthFactor(pcfg.ID, pcfg.FilePattern, pcfg.DataGrowthFactor)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create json parser %s: %w", pcfg.ID, err)
 			}
@@ -93,14 +93,15 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 			p = jp
 		case "external":
 			p, err = external.New(external.Config{
-				ID:          pcfg.ID,
-				FilePattern: pcfg.FilePattern,
-				Command:     pcfg.Command,
-				Args:        pcfg.Args,
-				Env:         pcfg.Env,
-				TempDir:     cfg.Processing.TempDir,
-				Stdin:       pcfg.Stdin,
-				Stdout:      pcfg.Stdout,
+				ID:               pcfg.ID,
+				FilePattern:      pcfg.FilePattern,
+				Command:          pcfg.Command,
+				Args:             pcfg.Args,
+				Env:              pcfg.Env,
+				TempDir:          cfg.Processing.TempDir,
+				Stdin:            pcfg.Stdin,
+				Stdout:           pcfg.Stdout,
+				DataGrowthFactor: pcfg.DataGrowthFactor,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("failed to create external parser %s: %w", pcfg.ID, err)
@@ -179,6 +180,13 @@ func (p *Processor) checkDiskSpaceStartup() error {
 // CheckDiskSpace checks if there is sufficient disk space for processing.
 // Returns true if there is enough space, false if backoff should occur.
 func (p *Processor) CheckDiskSpace() (bool, error) {
+	return p.CheckDiskSpaceForEstimatedOutput(0)
+}
+
+// CheckDiskSpaceForEstimatedOutput checks if there is sufficient disk space for processing,
+// considering the estimated output size and current in-flight output.
+// Returns true if there is enough space, false if backoff should occur.
+func (p *Processor) CheckDiskSpaceForEstimatedOutput(estimatedOutputSize int64) (bool, error) {
 	if !p.cfg.Processing.BackoffEnabled {
 		return true, nil
 	}
@@ -190,8 +198,15 @@ func (p *Processor) CheckDiskSpace() (bool, error) {
 
 	p.metrics.SetOutputDirFreeBytes(freeSpace)
 	minFreeBytes := p.cfg.Processing.GetMinFreeSpaceBytes()
+	inFlightBytes := p.metrics.GetInFlightOutputBytes()
 
-	if freeSpace < minFreeBytes {
+	// Available space = free space - in-flight output - estimated new output
+	availableSpace := int64(freeSpace) - inFlightBytes - estimatedOutputSize
+	if availableSpace < 0 {
+		availableSpace = 0
+	}
+
+	if uint64(availableSpace) < minFreeBytes {
 		return false, nil
 	}
 
@@ -219,6 +234,10 @@ func (p *Processor) Run(ctx context.Context) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
+	// Create ticker for periodic in-flight size logging (every 30 seconds)
+	inFlightLogTicker := time.NewTicker(30 * time.Second)
+	defer inFlightLogTicker.Stop()
+
 	// Process immediately on start (if disk space allows)
 	if hasSpace, err := p.CheckDiskSpace(); err != nil {
 		p.logger.Warn("failed to check disk space", "error", err)
@@ -235,6 +254,19 @@ func (p *Processor) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			p.logger.Info("processor stopped")
 			return ctx.Err()
+		case <-inFlightLogTicker.C:
+			// Log in-flight output size periodically for monitoring
+			inFlightBytes := p.metrics.GetInFlightOutputBytes()
+			if inFlightBytes > 0 {
+				freeSpace, _ := utils.GetFreeSpace(p.cfg.Output.Directory)
+				p.logger.Info("in-flight output status",
+					"in_flight_bytes", inFlightBytes,
+					"in_flight_mb", float64(inFlightBytes)/(1024*1024),
+					"free_space_bytes", freeSpace,
+					"free_space_mb", float64(freeSpace)/(1024*1024),
+					"min_free_space_mb", float64(p.cfg.Processing.GetMinFreeSpaceBytes())/(1024*1024),
+				)
+			}
 		case <-ticker.C:
 			// Check disk space before processing
 			hasSpace, err := p.CheckDiskSpace()
@@ -244,8 +276,10 @@ func (p *Processor) Run(ctx context.Context) error {
 
 			if !hasSpace {
 				freeSpace, _ := utils.GetFreeSpace(p.cfg.Output.Directory)
+				inFlightBytes := p.metrics.GetInFlightOutputBytes()
 				p.logger.Warn("insufficient disk space, skipping processing cycle",
 					"free_space_mb", float64(freeSpace)/(1024*1024),
+					"in_flight_mb", float64(inFlightBytes)/(1024*1024),
 					"min_free_space_mb", float64(p.cfg.Processing.GetMinFreeSpaceBytes())/(1024*1024),
 				)
 				p.metrics.RecordBackoff()
@@ -564,6 +598,50 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo, rdr *
 	storageAccountName := rdr.GetStorageAccountName()
 	p.logger.Debug("processing blob", "container", containerName, "name", blob.Name, "size", blob.Size)
 
+	// Find a parser that matches the blob name BEFORE downloading
+	psr, ok := p.parsers.FindMatching(blob.Name)
+	if !ok {
+		p.logger.Debug("no matching parser for blob", "container", containerName, "name", blob.Name)
+		return nil
+	}
+
+	// Estimate output size using the parser's data growth factor
+	estimatedOutputSize := int64(float64(blob.Size) * psr.DataGrowthFactor())
+
+	// Check if we have enough disk space for this blob's estimated output
+	hasSpace, err := p.CheckDiskSpaceForEstimatedOutput(estimatedOutputSize)
+	if err != nil {
+		p.logger.Warn("failed to check disk space", "error", err)
+	}
+	if !hasSpace {
+		p.logger.Warn("insufficient disk space for blob, skipping",
+			"container", containerName,
+			"blob", blob.Name,
+			"input_size", blob.Size,
+			"estimated_output_size", estimatedOutputSize,
+			"data_growth_factor", psr.DataGrowthFactor(),
+			"in_flight_bytes", p.metrics.GetInFlightOutputBytes(),
+		)
+		p.metrics.RecordBackoff()
+		return fmt.Errorf("insufficient disk space for estimated output size %d bytes", estimatedOutputSize)
+	}
+
+	// Add estimated output size to in-flight counter
+	p.metrics.AddInFlightOutputBytes(estimatedOutputSize)
+	defer func() {
+		// Always subtract from in-flight counter when done (success or failure)
+		p.metrics.SubtractInFlightOutputBytes(estimatedOutputSize)
+	}()
+
+	p.logger.Debug("tracking in-flight output",
+		"container", containerName,
+		"blob", blob.Name,
+		"input_size", blob.Size,
+		"estimated_output_size", estimatedOutputSize,
+		"data_growth_factor", psr.DataGrowthFactor(),
+		"in_flight_bytes", p.metrics.GetInFlightOutputBytes(),
+	)
+
 	// Download blob
 	data, size, err := rdr.Download(ctx, blob.Name)
 	if err != nil {
@@ -575,13 +653,6 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo, rdr *
 	buf, err := io.ReadAll(data)
 	if err != nil {
 		return fmt.Errorf("failed to read blob data: %w", err)
-	}
-
-	// Find a parser that matches the blob name
-	psr, ok := p.parsers.FindMatching(blob.Name)
-	if !ok {
-		p.logger.Debug("no matching parser for blob", "container", containerName, "name", blob.Name)
-		return nil
 	}
 
 	p.logger.Debug("using parser", "parser", psr.ID(), "container", containerName, "blob", blob.Name)

@@ -20,10 +20,15 @@ type Parser struct {
 
 // New creates a new JSON parser.
 func New(id, filePattern string) (*Parser, error) {
+	return NewWithGrowthFactor(id, filePattern, 1.0)
+}
+
+// NewWithGrowthFactor creates a new JSON parser with a specified data growth factor.
+func NewWithGrowthFactor(id, filePattern string, dataGrowthFactor float64) (*Parser, error) {
 	if id == "" {
 		id = "json"
 	}
-	base, err := parser.NewBaseParser(id, filePattern)
+	base, err := parser.NewBaseParserWithGrowthFactor(id, filePattern, dataGrowthFactor)
 	if err != nil {
 		return nil, fmt.Errorf("invalid file pattern: %w", err)
 	}

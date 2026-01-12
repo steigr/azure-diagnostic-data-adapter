@@ -37,18 +37,24 @@ type Parser interface {
 	// MatchResult extracts named capture groups from the blob name.
 	// Returns a map of capture group names to their matched values.
 	MatchResult(blobName string) map[string]string
+
+	// DataGrowthFactor returns the estimated ratio of output size to input size.
+	// For example, a factor of 3.0 means the output is expected to be 3 times larger than the input.
+	// Default is 1.0 if not configured.
+	DataGrowthFactor() float64
 }
 
 // Config holds the configuration for a parser.
 type Config struct {
-	ID          string            `mapstructure:"id"`
-	Type        string            `mapstructure:"type"` // "json" or "external"
-	FilePattern string            `mapstructure:"file_pattern"`
-	Command     string            `mapstructure:"command"`
-	Args        []string          `mapstructure:"args"`
-	Env         map[string]string `mapstructure:"env"`
-	Stdin       bool              `mapstructure:"stdin"`  // For external: read input from stdin
-	Stdout      bool              `mapstructure:"stdout"` // For external: write output to stdout
+	ID               string            `mapstructure:"id"`
+	Type             string            `mapstructure:"type"` // "json" or "external"
+	FilePattern      string            `mapstructure:"file_pattern"`
+	Command          string            `mapstructure:"command"`
+	Args             []string          `mapstructure:"args"`
+	Env              map[string]string `mapstructure:"env"`
+	Stdin            bool              `mapstructure:"stdin"`              // For external: read input from stdin
+	Stdout           bool              `mapstructure:"stdout"`             // For external: write output to stdout
+	DataGrowthFactor float64           `mapstructure:"data_growth_factor"` // Estimated output/input size ratio (default: 1.0)
 }
 
 // Registry holds registered parsers.
@@ -99,13 +105,20 @@ func (r *Registry) List() []string {
 
 // BaseParser provides common functionality for parsers.
 type BaseParser struct {
-	id      string
-	pattern *regexp.Regexp
+	id               string
+	pattern          *regexp.Regexp
+	dataGrowthFactor float64
 }
 
 // NewBaseParser creates a new BaseParser with the given ID and file pattern.
 // The file pattern matching is case-insensitive.
 func NewBaseParser(id, filePattern string) (*BaseParser, error) {
+	return NewBaseParserWithGrowthFactor(id, filePattern, 1.0)
+}
+
+// NewBaseParserWithGrowthFactor creates a new BaseParser with the given ID, file pattern, and data growth factor.
+// The file pattern matching is case-insensitive.
+func NewBaseParserWithGrowthFactor(id, filePattern string, dataGrowthFactor float64) (*BaseParser, error) {
 	var pattern *regexp.Regexp
 	var err error
 	if filePattern != "" {
@@ -115,9 +128,14 @@ func NewBaseParser(id, filePattern string) (*BaseParser, error) {
 			return nil, err
 		}
 	}
+	// Default to 1.0 if not set or invalid
+	if dataGrowthFactor <= 0 {
+		dataGrowthFactor = 1.0
+	}
 	return &BaseParser{
-		id:      id,
-		pattern: pattern,
+		id:               id,
+		pattern:          pattern,
+		dataGrowthFactor: dataGrowthFactor,
 	}, nil
 }
 
@@ -157,6 +175,14 @@ func (b *BaseParser) MatchResult(blobName string) map[string]string {
 	}
 
 	return result
+}
+
+// DataGrowthFactor returns the estimated ratio of output size to input size.
+func (b *BaseParser) DataGrowthFactor() float64 {
+	if b.dataGrowthFactor <= 0 {
+		return 1.0
+	}
+	return b.dataGrowthFactor
 }
 
 // ParseWithContext is a default implementation that calls Parse without using context.

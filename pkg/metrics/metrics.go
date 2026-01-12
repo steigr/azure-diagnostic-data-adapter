@@ -4,6 +4,7 @@ package metrics
 import (
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -17,18 +18,20 @@ var (
 
 // Metrics holds all Prometheus metrics for the application.
 type Metrics struct {
-	BlobsProcessed     prometheus.Counter
-	BlobsFailed        prometheus.Counter
-	ProcessedBytes     prometheus.Counter
-	LinesWritten       prometheus.Counter
-	BlobProcessingTime prometheus.Histogram
-	OutputDirFreeBytes prometheus.Gauge
-	ActiveParsers      prometheus.Gauge
-	PollsTotal         prometheus.Counter
-	PollsWithData      prometheus.Counter
-	PollsEmpty         prometheus.Counter
-	BackoffTotal       prometheus.Counter
-	BackoffActive      prometheus.Gauge
+	BlobsProcessed      prometheus.Counter
+	BlobsFailed         prometheus.Counter
+	ProcessedBytes      prometheus.Counter
+	LinesWritten        prometheus.Counter
+	BlobProcessingTime  prometheus.Histogram
+	OutputDirFreeBytes  prometheus.Gauge
+	ActiveParsers       prometheus.Gauge
+	PollsTotal          prometheus.Counter
+	PollsWithData       prometheus.Counter
+	PollsEmpty          prometheus.Counter
+	BackoffTotal        prometheus.Counter
+	BackoffActive       prometheus.Gauge
+	InFlightOutputBytes prometheus.Gauge
+	inFlightOutputBytes int64 // atomic counter for in-flight output size tracking
 }
 
 // New creates and registers all metrics. It returns a singleton instance.
@@ -83,6 +86,10 @@ func New() *Metrics {
 			BackoffActive: promauto.NewGauge(prometheus.GaugeOpts{
 				Name: "adda_backoff_active",
 				Help: "Whether backoff is currently active (1) or not (0)",
+			}),
+			InFlightOutputBytes: promauto.NewGauge(prometheus.GaugeOpts{
+				Name: "adda_in_flight_output_bytes",
+				Help: "Estimated bytes of output currently being processed (in-flight)",
 			}),
 		}
 	})
@@ -139,4 +146,30 @@ func (m *Metrics) RecordBackoff() {
 // ClearBackoff clears the backoff active gauge.
 func (m *Metrics) ClearBackoff() {
 	m.BackoffActive.Set(0)
+}
+
+// AddInFlightOutputBytes adds bytes to the in-flight output size counter.
+// Returns the new total in-flight size.
+func (m *Metrics) AddInFlightOutputBytes(bytes int64) int64 {
+	newValue := atomic.AddInt64(&m.inFlightOutputBytes, bytes)
+	m.InFlightOutputBytes.Set(float64(newValue))
+	return newValue
+}
+
+// SubtractInFlightOutputBytes subtracts bytes from the in-flight output size counter.
+// Returns the new total in-flight size.
+func (m *Metrics) SubtractInFlightOutputBytes(bytes int64) int64 {
+	newValue := atomic.AddInt64(&m.inFlightOutputBytes, -bytes)
+	// Ensure we don't go negative
+	if newValue < 0 {
+		atomic.StoreInt64(&m.inFlightOutputBytes, 0)
+		newValue = 0
+	}
+	m.InFlightOutputBytes.Set(float64(newValue))
+	return newValue
+}
+
+// GetInFlightOutputBytes returns the current in-flight output size.
+func (m *Metrics) GetInFlightOutputBytes() int64 {
+	return atomic.LoadInt64(&m.inFlightOutputBytes)
 }
