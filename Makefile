@@ -1,7 +1,7 @@
 # Azure Diagnostic Data Adapter Makefile
 
 BINARY_NAME=adda
-VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION?=git-$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_TIME=$(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
@@ -16,7 +16,7 @@ LDFLAGS_DEBUG=-ldflags "-X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIM
 
 # Container settings
 CONTAINER_TOOL?=docker
-IMAGE_NAME?=$(BINARY_NAME)
+IMAGE_NAME?=steigr/azure-diagnostic-data-adapter
 
 # Azurite settings
 AZURITE_DATA_DIR?=/tmp/azurite
