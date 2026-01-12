@@ -30,19 +30,19 @@ all: clean lint test build ## Clean, lint, test, and build
 
 build: ## Build the binary (optimized, stripped)
 	@echo "Building $(BINARY_NAME) (optimized)..."
-	CGO_ENABLED=0 go build $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/adda
+	go build $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/adda
 
 build-debug: ## Build the binary with debug info
 	@echo "Building $(BINARY_NAME) (debug)..."
-	CGO_ENABLED=0 go build $(LDFLAGS_DEBUG) -o bin/$(BINARY_NAME) ./cmd/adda
+	go build $(LDFLAGS_DEBUG) -o bin/$(BINARY_NAME) ./cmd/adda
 
 build-linux: ## Build for Linux (optimized, stripped)
 	@echo "Building $(BINARY_NAME) for Linux (optimized)..."
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build $(LDFLAGS) -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/adda
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/adda
 
 build-linux-debug: ## Build for Linux with debug info
 	@echo "Building $(BINARY_NAME) for Linux (debug)..."
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build $(LDFLAGS_DEBUG) -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/adda
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS_DEBUG) -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/adda
 
 build-all: build build-linux ## Build for all platforms (optimized)
 
