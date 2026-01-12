@@ -24,6 +24,9 @@ type Metrics struct {
 	BlobProcessingTime prometheus.Histogram
 	OutputDirFreeBytes prometheus.Gauge
 	ActiveParsers      prometheus.Gauge
+	PollsTotal         prometheus.Counter
+	PollsWithData      prometheus.Counter
+	PollsEmpty         prometheus.Counter
 }
 
 // New creates and registers all metrics. It returns a singleton instance.
@@ -59,6 +62,18 @@ func New() *Metrics {
 				Name: "adda_active_parsers",
 				Help: "Number of currently active parsers",
 			}),
+			PollsTotal: promauto.NewCounter(prometheus.CounterOpts{
+				Name: "adda_polls_total",
+				Help: "Total number of times the reader checked for available blobs",
+			}),
+			PollsWithData: promauto.NewCounter(prometheus.CounterOpts{
+				Name: "adda_polls_with_data_total",
+				Help: "Number of polls that found data to process",
+			}),
+			PollsEmpty: promauto.NewCounter(prometheus.CounterOpts{
+				Name: "adda_polls_empty_total",
+				Help: "Number of polls that found no data to process",
+			}),
 		}
 	})
 	return instance
@@ -93,4 +108,14 @@ func (m *Metrics) SetOutputDirFreeBytes(bytes uint64) {
 // SetActiveParsers sets the current active parsers gauge.
 func (m *Metrics) SetActiveParsers(count int) {
 	m.ActiveParsers.Set(float64(count))
+}
+
+// RecordPoll records a poll attempt and whether it found data.
+func (m *Metrics) RecordPoll(foundData bool) {
+	m.PollsTotal.Inc()
+	if foundData {
+		m.PollsWithData.Inc()
+	} else {
+		m.PollsEmpty.Inc()
+	}
 }

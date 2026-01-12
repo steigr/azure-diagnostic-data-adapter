@@ -150,6 +150,11 @@ processing:
   # Examples: 24h, 7d, 30d (note: Go duration format, use "h" for hours)
   max_age: "0s"
 
+  # Interval between polling for new blobs in continuous mode (default: 1m)
+  # Lower values increase responsiveness but also API calls
+  # Examples: 30s, 1m, 5m
+  poll_interval: "1m"
+
 logging:
   # Log level: debug, info, warn, error
   level: "info"

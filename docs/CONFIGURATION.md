@@ -163,6 +163,9 @@ processing:
   
   # Maximum age of blobs to process (0 = no maximum)
   max_age: "0s"
+  
+  # Interval between polling for new blobs (default: 1m)
+  poll_interval: "1m"
 ```
 
 | Field | CLI Flag | Default | Description |
@@ -180,6 +183,7 @@ processing:
 | `once_limit` | `--once-limit` | `10` | Max blobs for --once |
 | `min_age` | `--blob-min-age` | `0s` | Min blob age |
 | `max_age` | `--blob-max-age` | `0s` | Max blob age |
+| `poll_interval` | `--poll-interval` | `1m` | Poll interval |
 
 ### Metrics Configuration
 

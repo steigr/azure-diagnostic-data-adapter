@@ -123,22 +123,36 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 
 // Run starts the processing loop.
 func (p *Processor) Run(ctx context.Context) error {
+	// Use configured poll interval, default to 1 minute if not set
+	pollInterval := p.cfg.Processing.PollInterval
+	if pollInterval <= 0 {
+		pollInterval = time.Minute
+	}
+
 	p.logger.Info("starting processor",
 		"workers", p.cfg.Processing.Workers,
 		"dry_run", p.cfg.Processing.DryRun,
+		"poll_interval", pollInterval,
 	)
+
+	// Create ticker for polling
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	// Process immediately on start
+	if err := p.processOnce(ctx); err != nil {
+		p.logger.Error("processing error", "error", err)
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			p.logger.Info("processor stopped")
 			return ctx.Err()
-		default:
+		case <-ticker.C:
 			if err := p.processOnce(ctx); err != nil {
 				p.logger.Error("processing error", "error", err)
 			}
-			// Small delay between iterations
-			time.Sleep(time.Second)
 		}
 	}
 }
@@ -289,7 +303,6 @@ func (p *Processor) processOnceWithLimit(ctx context.Context, limit int) error {
 					"free_space_gb", float64(freeSpace)/(1024*1024*1024),
 					"min_free_space_gb", p.cfg.Processing.MinFreeSpaceGB,
 				)
-				time.Sleep(30 * time.Second)
 				return nil
 			}
 		}
@@ -309,8 +322,13 @@ func (p *Processor) processOnceWithLimit(ctx context.Context, limit int) error {
 		MaxAge:    p.cfg.Processing.MaxAge,
 	})
 	if err != nil {
+		p.metrics.RecordPoll(false)
 		return fmt.Errorf("failed to list blobs: %w", err)
 	}
+
+	// Record poll metrics
+	foundData := len(blobs) > 0
+	p.metrics.RecordPoll(foundData)
 
 	if len(blobs) == 0 {
 		p.logger.Debug("no blobs to process")

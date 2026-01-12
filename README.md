@@ -230,6 +230,9 @@ Prometheus metrics are exposed at `/metrics`:
 | `adda_blob_processing_seconds` | Histogram | Processing time per blob |
 | `adda_output_dir_free_bytes` | Gauge | Free space in output directory |
 | `adda_active_parsers` | Gauge | Currently active parsers |
+| `adda_polls_total` | Counter | Total poll attempts |
+| `adda_polls_with_data_total` | Counter | Polls that found data |
+| `adda_polls_empty_total` | Counter | Polls with no data |
 
 Health check endpoint: `/health`
 

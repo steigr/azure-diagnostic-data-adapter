@@ -70,11 +70,12 @@ type ProcessingConfig struct {
 	RetryAttempts      int           `mapstructure:"retry_attempts"`
 	RetryDelay         time.Duration `mapstructure:"retry_delay"`
 	TempDir            string        `mapstructure:"temp_dir"`
-	SortOrder          string        `mapstructure:"sort_order"`  // "newest" or "oldest" (default: "oldest")
-	BatchLimit         int           `mapstructure:"batch_limit"` // Max blobs per batch (0 = unlimited)
-	OnceLimit          int           `mapstructure:"once_limit"`  // Max blobs for --once mode (default: 10)
-	MinAge             time.Duration `mapstructure:"min_age"`     // Minimum age of blobs to process (0 = no minimum)
-	MaxAge             time.Duration `mapstructure:"max_age"`     // Maximum age of blobs to process (0 = no maximum)
+	SortOrder          string        `mapstructure:"sort_order"`    // "newest" or "oldest" (default: "oldest")
+	BatchLimit         int           `mapstructure:"batch_limit"`   // Max blobs per batch (0 = unlimited)
+	OnceLimit          int           `mapstructure:"once_limit"`    // Max blobs for --once mode (default: 10)
+	MinAge             time.Duration `mapstructure:"min_age"`       // Minimum age of blobs to process (0 = no minimum)
+	MaxAge             time.Duration `mapstructure:"max_age"`       // Maximum age of blobs to process (0 = no maximum)
+	PollInterval       time.Duration `mapstructure:"poll_interval"` // Interval between polling for new blobs (default: 1m)
 }
 
 // LoggingConfig holds logging configuration.
@@ -153,6 +154,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("processing.once_limit", 10)       // Default limit for --once mode
 	v.SetDefault("processing.min_age", "0s")        // No minimum age
 	v.SetDefault("processing.max_age", "0s")        // No maximum age
+	v.SetDefault("processing.poll_interval", "1m")  // Poll every minute
 
 	// Logging defaults
 	v.SetDefault("logging.level", "info")
@@ -214,6 +216,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Processing.MinAge > 0 && c.Processing.MaxAge > 0 && c.Processing.MinAge > c.Processing.MaxAge {
 		return fmt.Errorf("processing.min_age cannot be greater than processing.max_age")
+	}
+	if c.Processing.PollInterval < 0 {
+		return fmt.Errorf("processing.poll_interval must be non-negative")
 	}
 	if c.Processing.TempDir != "" {
 		if info, err := os.Stat(c.Processing.TempDir); err != nil {
