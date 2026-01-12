@@ -1,9 +1,12 @@
 # Azure Diagnostic Data Adapter Makefile
 
 BINARY_NAME=adda
-VERSION?=git-$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-BUILD_TIME=$(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+VERSION_FILE=$(shell cat VERSION.txt 2>/dev/null || echo "0.0.0")
+GIT_BRANCH=$(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+GIT_DIRTY=$(shell git diff --quiet 2>/dev/null || echo "-dirty")
+VERSION?=$(if $(filter main,$(GIT_BRANCH)),$(VERSION_FILE),$(VERSION_FILE)-$(GIT_COMMIT)$(GIT_DIRTY))
+BUILD_TIME=$(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 # Build flags for optimized binary size
 # -s: Omit symbol table and debug information
