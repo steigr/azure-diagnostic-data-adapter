@@ -91,7 +91,6 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 	parsers := parser.NewRegistry()
 	for _, pcfg := range cfg.Parsers {
 		var p parser.Parser
-		var err error
 		switch pcfg.Type {
 		case "ndjson":
 			np, err := ndjsonparser.NewWithGrowthFactor(pcfg.ID, pcfg.FilePattern, pcfg.DataGrowthFactor)
