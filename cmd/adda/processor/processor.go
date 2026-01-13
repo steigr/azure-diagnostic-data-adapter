@@ -108,7 +108,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 			jp.SetLogger(logger)
 			p = jp
 		case "external":
-			p, err = external.New(external.Config{
+			ep, err := external.New(external.Config{
 				ID:               pcfg.ID,
 				FilePattern:      pcfg.FilePattern,
 				Command:          pcfg.Command,
@@ -122,6 +122,8 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 			if err != nil {
 				return nil, fmt.Errorf("failed to create external parser %s: %w", pcfg.ID, err)
 			}
+			ep.SetLogger(logger)
+			p = ep
 		default:
 			return nil, fmt.Errorf("unknown parser type: %s", pcfg.Type)
 		}

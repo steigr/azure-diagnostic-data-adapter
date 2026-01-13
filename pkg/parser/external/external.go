@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,7 @@ type Parser struct {
 	tempDir string
 	stdin   bool
 	stdout  bool
+	logger  *slog.Logger
 }
 
 // Config holds configuration for the external parser.
@@ -65,7 +67,13 @@ func New(cfg Config) (*Parser, error) {
 		tempDir:    cfg.TempDir,
 		stdin:      cfg.Stdin,
 		stdout:     cfg.Stdout,
+		logger:     slog.Default(),
 	}, nil
+}
+
+// SetLogger sets the logger for the parser.
+func (p *Parser) SetLogger(logger *slog.Logger) {
+	p.logger = logger
 }
 
 // Parse runs the external command with input data and returns parsed records.
@@ -186,29 +194,26 @@ func (p *Parser) ParseWithContext(input io.Reader, parseCtx parser.ParseContext)
 		cmd.Stdin = input
 	}
 
-	if p.stdout {
-		cmd.Stdout = &outputBuf
-		cmd.Stderr = &stderrBuf
-	}
+	// Always capture stderr separately to avoid mixing with stdout
+	cmd.Stderr = &stderrBuf
 
 	if p.stdout {
-		err = cmd.Run()
-		if err != nil {
-			stderrStr := strings.TrimSpace(stderrBuf.String())
-			if ctx.Err() == context.DeadlineExceeded {
-				return nil, fmt.Errorf("external command timed out after %v: %w", p.timeout, err)
-			}
-			return nil, fmt.Errorf("external command failed: %w, stderr: %s", err, stderrStr)
+		// Capture stdout for parser output
+		cmd.Stdout = &outputBuf
+	}
+
+	// Run the command
+	err = cmd.Run()
+
+	// Log stderr output line by line (regardless of success/failure)
+	p.logStderr(&stderrBuf, command)
+
+	if err != nil {
+		stderrStr := strings.TrimSpace(stderrBuf.String())
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("external command timed out after %v: %w", p.timeout, err)
 		}
-	} else {
-		combinedOutput, err := cmd.CombinedOutput()
-		if err != nil {
-			outputStr := strings.TrimSpace(string(combinedOutput))
-			if ctx.Err() == context.DeadlineExceeded {
-				return nil, fmt.Errorf("external command timed out after %v: %w", p.timeout, err)
-			}
-			return nil, fmt.Errorf("external command failed: %w, output: %s", err, outputStr)
-		}
+		return nil, fmt.Errorf("external command failed: %w, stderr: %s", err, stderrStr)
 	}
 
 	// Read output data
@@ -310,6 +315,25 @@ func resolveGlob(pattern string) (string, error) {
 
 	// Return the first match
 	return matches[0], nil
+}
+
+// logStderr logs each line of stderr output from an external command.
+func (p *Parser) logStderr(stderrBuf *bytes.Buffer, command string) {
+	if stderrBuf.Len() == 0 {
+		return
+	}
+
+	scanner := bufio.NewScanner(stderrBuf)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line != "" {
+			p.logger.Debug("external parser stderr",
+				"parser", p.ID(),
+				"command", command,
+				"message", line,
+			)
+		}
+	}
 }
 
 // parseNDJSON parses NDJSON formatted data (one JSON object per line).
