@@ -116,6 +116,10 @@ parsers:
 #            and blob name "logs/2026/01/data.json"
 #            .Metadata.FileMatch["year"] = "2026", .Metadata.FileMatch["month"] = "01"
 #
+# Accessing capture groups in templates:
+#   {{ index .Metadata.FileMatch "year" }}   - Get capture group by name
+#   {{ .Metadata.FileMatch.year }}           - Alternative dot notation (if key is valid identifier)
+#
 # Path helper functions:
 #   pathDir <path>         - Get directory portion of path
 #   pathBase <path>        - Get base filename
@@ -137,6 +141,79 @@ enrichment_template: |
       "extension": "{{ .Metadata.Extension }}"
     }
   }
+
+# ============================================================================
+# CAPTURE GROUP SCENARIO EXAMPLE
+# ============================================================================
+# This example demonstrates how to use named capture groups in file_pattern
+# to extract metadata from blob paths and use them in enrichment templates.
+#
+# Scenario: Processing Azure diagnostic logs organized by environment, date, and service
+# Blob path format: logs/<environment>/<year>/<month>/<day>/<service>/<filename>.json
+# Example blob: logs/production/2026/01/15/api-gateway/requests.json
+#
+# Step 1: Define parser with named capture groups in file_pattern
+# ----------------------------------------------------------------
+# parsers:
+#   - id: "azure-diagnostics"
+#     type: "ndjson"
+#     file_pattern: "logs/(?P<environment>[^/]+)/(?P<year>\\d{4})/(?P<month>\\d{2})/(?P<day>\\d{2})/(?P<service>[^/]+)/.*\\.json$"
+#
+# Step 2: Use capture groups in enrichment_template
+# -------------------------------------------------
+# enrichment_template: |
+#   {
+#     "_source": {
+#       "blob": "{{ .Metadata.BlobName }}",
+#       "container": "{{ .Metadata.ContainerName }}",
+#       "storage_account": "{{ .Metadata.StorageAccount }}",
+#       "processed_at": "{{ .Metadata.ProcessedAt.Format "2006-01-02T15:04:05Z07:00" }}"
+#     },
+#     "environment": "{{ index .Metadata.FileMatch "environment" }}",
+#     "service": "{{ index .Metadata.FileMatch "service" }}",
+#     "log_date": "{{ index .Metadata.FileMatch "year" }}-{{ index .Metadata.FileMatch "month" }}-{{ index .Metadata.FileMatch "day" }}"
+#   }
+#
+# Result for blob "logs/production/2026/01/15/api-gateway/requests.json":
+# ------------------------------------------------------------------------
+# {
+#   "_source": {
+#     "blob": "logs/production/2026/01/15/api-gateway/requests.json",
+#     "container": "diagnostics",
+#     "storage_account": "mystorageaccount",
+#     "processed_at": "2026-01-15T10:30:00Z"
+#   },
+#   "environment": "production",
+#   "service": "api-gateway",
+#   "log_date": "2026-01-15",
+#   ... (original record fields)
+# }
+#
+# For external parsers, capture groups are also available as environment variables:
+# ---------------------------------------------------------------------------------
+#   STORAGE_ACCOUNT_NAME=mystorageaccount
+#   CONTAINER_NAME=diagnostics
+#   BLOB_NAME=logs/production/2026/01/15/api-gateway/requests.json
+#   MATCH_ENVIRONMENT=production
+#   MATCH_YEAR=2026
+#   MATCH_MONTH=01
+#   MATCH_DAY=15
+#   MATCH_SERVICE=api-gateway
+#
+# Example external parser using capture groups in environment:
+# ------------------------------------------------------------
+# parsers:
+#   - id: "custom-parser"
+#     type: "external"
+#     file_pattern: "logs/(?P<environment>[^/]+)/(?P<service>[^/]+)/.*\\.log$"
+#     command: "/usr/local/bin/log-parser.sh"
+#     stdin: true
+#     stdout: true
+#     env:
+#       # Use envsubst to reference capture groups
+#       LOG_ENV: "${MATCH_ENVIRONMENT}"
+#       LOG_SERVICE: "${MATCH_SERVICE}"
+# ============================================================================
 
 metrics:
   # Enable Prometheus metrics endpoint
