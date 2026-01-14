@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,6 +229,7 @@ type MultiWriter struct {
 	writers          map[string]*Writer
 	pendingDeletions map[string]*pendingDeletion
 	mu               sync.RWMutex
+	logger           *slog.Logger
 }
 
 // NewMultiWriter creates a new MultiWriter with the given base configuration.
@@ -236,7 +238,13 @@ func NewMultiWriter(cfg Config) *MultiWriter {
 		baseConfig:       cfg,
 		writers:          make(map[string]*Writer),
 		pendingDeletions: make(map[string]*pendingDeletion),
+		logger:           slog.Default(),
 	}
+}
+
+// SetLogger sets the logger for the MultiWriter.
+func (m *MultiWriter) SetLogger(logger *slog.Logger) {
+	m.logger = logger
 }
 
 // GenerateSourceHash generates a short hash from source information.
@@ -342,6 +350,13 @@ func (m *MultiWriter) scheduleDelete(info SourceInfo) {
 		pending.timer.Stop()
 	}
 
+	// Log the scheduled deletion
+	delaySeconds := int(m.baseConfig.DeleteDelay.Seconds())
+	m.logger.Debug("giving the log collector time to find and open the file",
+		"filename", filename,
+		"delay_seconds", delaySeconds,
+	)
+
 	// Schedule new deletion
 	deleteAt := time.Now().Add(m.baseConfig.DeleteDelay)
 	timer := time.AfterFunc(m.baseConfig.DeleteDelay, func() {
@@ -371,7 +386,20 @@ func (m *MultiWriter) executeDelete(hash, filename string) {
 	m.mu.Unlock()
 
 	// Delete the file
-	_ = os.Remove(filename)
+	if err := os.Remove(filename); err != nil {
+		if !os.IsNotExist(err) {
+			m.logger.Error("failed to delete output file",
+				"filename", filename,
+				"hash", hash,
+				"error", err,
+			)
+		}
+	} else {
+		m.logger.Debug("deleted output file after delay",
+			"filename", filename,
+			"hash", hash,
+		)
+	}
 }
 
 // Write writes a single record (uses default writer - for backwards compatibility).

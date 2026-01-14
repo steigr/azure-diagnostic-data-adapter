@@ -140,6 +140,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 	w := writer.NewMultiWriter(cfg.GetWriterConfig())
+	w.SetLogger(logger)
 
 	// Create metrics
 	m := metrics.New()

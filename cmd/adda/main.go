@@ -119,6 +119,10 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Setup logger
 	logger := setupLogger(cfg)
+
+	// Set the configured logger as the default so all components use the correct log level
+	slog.SetDefault(logger)
+
 	logger.Info("starting Azure Diagnostic Data Adapter",
 		"version", version,
 		"buildTime", buildTime,

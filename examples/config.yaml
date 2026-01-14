@@ -39,20 +39,20 @@ source:
 #     file_pattern: ".*\\.json$"
 
 output:
-  # Directory for NDJSON output files
+  # Directory for NDJSON output files (default: .)
   directory: "/var/log/adda"
   
-  # Output filename (hash suffix will be added based on source)
+  # Output filename (hash suffix will be added based on source) (default: output.ndjson)
   # e.g., diagnostics_abc12345.ndjson
   filename: "diagnostics.ndjson"
   
-  # Max file size in MiB before rotation (0 = disabled, default: 0)
+  # Max file size in MiB before rotation (default: 0 = disabled)
   max_size: 0
 
-  # Max number of backup files to keep (0 = keep all, default: 0)
+  # Max number of backup files to keep (default: 0 = keep all)
   max_backups: 0
 
-  # Max age in days for backup files (0 = keep forever, default: 0)
+  # Max age in days for backup files (default: 0 = keep forever)
   max_age: 0
 
   # Enable gzip compression for output (default: false)
@@ -216,57 +216,58 @@ enrichment_template: |
 # ============================================================================
 
 metrics:
-  # Enable Prometheus metrics endpoint
+  # Enable Prometheus metrics endpoint (default: true)
   enabled: true
   
-  # Metrics server address
+  # Metrics server address (default: :9090)
   address: ":9090"
 
 processing:
-  # Number of parallel workers
+  # Number of parallel workers (default: 1)
   workers: 2
   
-  # Dry run mode (don't modify anything)
+  # Dry run mode (don't modify anything) (default: false)
   dry_run: false
   
-  # Delete blobs after successful processing
+  # Delete blobs after successful processing (default: true)
   delete_after_process: true
   
-  # Enable backoff based on free disk space
+  # Enable backoff based on free disk space (default: true)
   backoff_enabled: true
   
-  # Minimum free space in GB before backing off
-  min_free_space_gb: 1
-  
-  # Retry attempts for failed operations
+  # Minimum free space before backing off (default: 256MiB)
+  # Examples: 1GB, 500MB, 100MiB
+  min_free_space: "256MiB"
+
+  # Retry attempts for failed operations (default: 3)
   retry_attempts: 3
   
-  # Delay between retries
+  # Delay between retries (default: 5s)
   retry_delay: "5s"
   
-  # Temporary directory for external parsers (default: system temp)
+  # Temporary directory for external parsers (default: system temp directory)
   # Each parsing operation creates a unique subdirectory
   temp_dir: "/tmp/adda"
 
-  # Sort order for blob processing: "oldest" or "newest"
-  # - oldest: Process oldest blobs first (default, good for FIFO processing)
+  # Sort order for blob processing: "oldest" or "newest" (default: oldest)
+  # - oldest: Process oldest blobs first (good for FIFO processing)
   # - newest: Process newest blobs first (good for prioritizing recent data)
   sort_order: "oldest"
 
-  # Maximum blobs to process per batch in continuous mode (0 = unlimited)
+  # Maximum blobs to process per batch in continuous mode (default: 0 = unlimited)
   batch_limit: 0
 
   # Maximum blobs to process in --once mode (default: 10)
   once_limit: 10
 
-  # Minimum age of blobs to process (0 = no minimum)
+  # Minimum age of blobs to process (default: 0s = no minimum)
   # Useful to avoid processing files that are still being written
   # Examples: 15s, 5m, 1h, 24h
   min_age: "0s"
 
-  # Maximum age of blobs to process (0 = no maximum)
+  # Maximum age of blobs to process (default: 0s = no maximum)
   # Useful to skip very old files that have already been processed
-  # Examples: 24h, 7d, 30d (note: Go duration format, use "h" for hours)
+  # Examples: 24h, 168h (note: Go duration format, use "h" for hours)
   max_age: "0s"
 
   # Interval between polling for new blobs in continuous mode (default: 1m)
@@ -275,8 +276,8 @@ processing:
   poll_interval: "1m"
 
 logging:
-  # Log level: debug, info, warn, error
+  # Log level: debug, info, warn, error (default: info)
   level: "info"
   
-  # Log format: text, json
+  # Log format: text, json (default: text)
   format: "json"
