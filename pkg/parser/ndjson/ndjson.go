@@ -36,15 +36,21 @@ func NewWithGrowthFactor(id, filePattern string, dataGrowthFactor float64) (*Par
 	}
 	return &Parser{
 		BaseParser: base,
-		logger:     slog.Default(),
+		logger:     nil, // Will use slog.Default() if not set via SetLogger
 	}, nil
 }
 
 // SetLogger sets the logger for the parser.
 func (p *Parser) SetLogger(logger *slog.Logger) {
-	if logger != nil {
-		p.logger = logger
+	p.logger = logger
+}
+
+// getLogger returns the configured logger or falls back to slog.Default()
+func (p *Parser) getLogger() *slog.Logger {
+	if p.logger != nil {
+		return p.logger
 	}
+	return slog.Default()
 }
 
 // Parse reads NDJSON data and returns parsed records.
@@ -102,7 +108,7 @@ func (p *Parser) parseNDJSON(data []byte) ([]map[string]any, int) {
 			if len(lineStr) > 200 {
 				lineStr = lineStr[:200] + "..."
 			}
-			p.logger.Warn("failed to parse NDJSON line",
+			p.getLogger().Warn("failed to parse NDJSON line",
 				"line_number", lineNum,
 				"error", err.Error(),
 				"content", lineStr,
@@ -113,7 +119,7 @@ func (p *Parser) parseNDJSON(data []byte) ([]map[string]any, int) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		p.logger.Error("error reading input", "error", err)
+		p.getLogger().Error("error reading input", "error", err)
 	}
 
 	return records, parseErrors

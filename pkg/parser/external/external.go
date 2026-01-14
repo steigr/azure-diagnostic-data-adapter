@@ -67,13 +67,21 @@ func New(cfg Config) (*Parser, error) {
 		tempDir:    cfg.TempDir,
 		stdin:      cfg.Stdin,
 		stdout:     cfg.Stdout,
-		logger:     slog.Default(),
+		logger:     nil, // Will use slog.Default() if not set via SetLogger
 	}, nil
 }
 
 // SetLogger sets the logger for the parser.
 func (p *Parser) SetLogger(logger *slog.Logger) {
 	p.logger = logger
+}
+
+// getLogger returns the configured logger or falls back to slog.Default()
+func (p *Parser) getLogger() *slog.Logger {
+	if p.logger != nil {
+		return p.logger
+	}
+	return slog.Default()
 }
 
 // Parse runs the external command with input data and returns parsed records.
@@ -219,7 +227,7 @@ func (p *Parser) ParseWithContext(input io.Reader, parseCtx parser.ParseContext)
 			line := scanner.Text()
 			// Log immediately
 			if line != "" {
-				p.logger.Debug("external parser stderr",
+				p.getLogger().Debug("external parser stderr",
 					"parser", p.ID(),
 					"command", command,
 					"message", line,

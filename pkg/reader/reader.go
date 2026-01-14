@@ -77,7 +77,7 @@ func New(ctx context.Context, cfg Config) (*Reader, error) {
 		storageAccountName: cfg.StorageAccountName,
 		containerName:      cfg.ContainerName,
 		pattern:            pattern,
-		logger:             slog.Default(),
+		logger:             nil, // Will use slog.Default() if not set via SetLogger
 	}, nil
 }
 
@@ -104,7 +104,7 @@ func NewWithConnectionString(connStr string, containerName string, filePattern s
 		storageAccountName: storageAccountName,
 		containerName:      containerName,
 		pattern:            pattern,
-		logger:             slog.Default(),
+		logger:             nil, // Will use slog.Default() if not set via SetLogger
 	}, nil
 }
 
@@ -121,9 +121,15 @@ func extractStorageAccountFromConnStr(connStr string) string {
 
 // SetLogger sets the logger for the reader.
 func (r *Reader) SetLogger(logger *slog.Logger) {
-	if logger != nil {
-		r.logger = logger
+	r.logger = logger
+}
+
+// getLogger returns the configured logger or falls back to slog.Default()
+func (r *Reader) getLogger() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
 	}
+	return slog.Default()
 }
 
 // ListOptions configures the blob listing behavior.
@@ -141,7 +147,7 @@ func (r *Reader) List(ctx context.Context) ([]BlobInfo, error) {
 
 // ListWithOptions returns a list of blobs with custom options for sorting and limiting.
 func (r *Reader) ListWithOptions(ctx context.Context, opts ListOptions) ([]BlobInfo, error) {
-	r.logger.Debug("listing blobs from container",
+	r.getLogger().Debug("listing blobs from container",
 		"container", r.containerName,
 		"sort_order", opts.SortOrder,
 		"limit", opts.Limit,

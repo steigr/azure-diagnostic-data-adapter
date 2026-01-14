@@ -248,13 +248,21 @@ func NewMultiWriter(cfg Config) *MultiWriter {
 		baseConfig:       cfg,
 		writers:          make(map[string]*Writer),
 		pendingDeletions: make(map[string]*pendingDeletion),
-		logger:           slog.Default(),
+		logger:           nil, // Will use slog.Default() if not set via SetLogger
 	}
 }
 
 // SetLogger sets the logger for the MultiWriter.
 func (m *MultiWriter) SetLogger(logger *slog.Logger) {
 	m.logger = logger
+}
+
+// getLogger returns the configured logger or falls back to slog.Default()
+func (m *MultiWriter) getLogger() *slog.Logger {
+	if m.logger != nil {
+		return m.logger
+	}
+	return slog.Default()
 }
 
 // SetMetrics sets the metrics for the MultiWriter.
@@ -367,7 +375,7 @@ func (m *MultiWriter) scheduleDelete(info SourceInfo) {
 
 	// Log the scheduled deletion
 	delaySeconds := int(m.baseConfig.DeleteDelay.Seconds())
-	m.logger.Debug("giving the log collector time to find and open the file",
+	m.getLogger().Debug("giving the log collector time to find and open the file",
 		"filename", filename,
 		"delay_seconds", delaySeconds,
 	)
@@ -404,7 +412,7 @@ func (m *MultiWriter) executeDelete(hash, filename string) {
 	mainDeleted := false
 	if err := os.Remove(filename); err != nil {
 		if !os.IsNotExist(err) {
-			m.logger.Error("failed to delete output file",
+			m.getLogger().Error("failed to delete output file",
 				"filename", filename,
 				"hash", hash,
 				"error", err,
@@ -426,7 +434,7 @@ func (m *MultiWriter) executeDelete(hash, filename string) {
 	}
 
 	if mainDeleted || backupsDeleted > 0 {
-		m.logger.Info("deleted output file after delay",
+		m.getLogger().Info("deleted output file after delay",
 			"filename", filename,
 			"hash", hash,
 			"backups_deleted", backupsDeleted,
@@ -445,7 +453,7 @@ func (m *MultiWriter) deleteRotatedFiles(filename string) int {
 
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
-		m.logger.Error("failed to glob for rotated files",
+		m.getLogger().Error("failed to glob for rotated files",
 			"pattern", pattern,
 			"error", err,
 		)
@@ -456,7 +464,7 @@ func (m *MultiWriter) deleteRotatedFiles(filename string) int {
 	for _, match := range matches {
 		if err := os.Remove(match); err != nil {
 			if !os.IsNotExist(err) {
-				m.logger.Error("failed to delete rotated backup file",
+				m.getLogger().Error("failed to delete rotated backup file",
 					"filename", match,
 					"error", err,
 				)

@@ -34,15 +34,21 @@ func NewWithGrowthFactor(id, filePattern string, dataGrowthFactor float64) (*Par
 	}
 	return &Parser{
 		BaseParser: base,
-		logger:     slog.Default(),
+		logger:     nil, // Will use slog.Default() if not set via SetLogger
 	}, nil
 }
 
 // SetLogger sets the logger for the parser.
 func (p *Parser) SetLogger(logger *slog.Logger) {
-	if logger != nil {
-		p.logger = logger
+	p.logger = logger
+}
+
+// getLogger returns the configured logger or falls back to slog.Default()
+func (p *Parser) getLogger() *slog.Logger {
+	if p.logger != nil {
+		return p.logger
 	}
+	return slog.Default()
 }
 
 // Parse reads JSON data and returns parsed records.
