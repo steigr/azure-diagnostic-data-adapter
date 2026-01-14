@@ -170,6 +170,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 	// Create metrics
 	m := metrics.New()
 
+	// Set metrics on writer for deletion tracking
+	w.SetMetrics(m)
+
 	proc := &Processor{
 		cfg:      cfg,
 		readers:  readers,
@@ -770,7 +773,8 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo, rdr *
 		if err := rdr.Delete(ctx, blob.Name); err != nil {
 			return fmt.Errorf("failed to delete blob: %w", err)
 		}
-		p.logger.Debug("deleted blob", "container", containerName, "name", blob.Name)
+		p.metrics.RecordBlobDeleted()
+		p.logger.Info("deleted blob", "container", containerName, "name", blob.Name)
 	}
 
 	// Record metrics

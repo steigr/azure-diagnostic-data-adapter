@@ -18,20 +18,23 @@ var (
 
 // Metrics holds all Prometheus metrics for the application.
 type Metrics struct {
-	BlobsProcessed      prometheus.Counter
-	BlobsFailed         prometheus.Counter
-	ProcessedBytes      prometheus.Counter
-	LinesWritten        prometheus.Counter
-	BlobProcessingTime  prometheus.Histogram
-	OutputDirFreeBytes  prometheus.Gauge
-	ActiveParsers       prometheus.Gauge
-	PollsTotal          prometheus.Counter
-	PollsWithData       prometheus.Counter
-	PollsEmpty          prometheus.Counter
-	BackoffTotal        prometheus.Counter
-	BackoffActive       prometheus.Gauge
-	InFlightOutputBytes prometheus.Gauge
-	inFlightOutputBytes int64 // atomic counter for in-flight output size tracking
+	BlobsProcessed       prometheus.Counter
+	BlobsFailed          prometheus.Counter
+	BlobsDeleted         prometheus.Counter
+	ProcessedBytes       prometheus.Counter
+	LinesWritten         prometheus.Counter
+	BlobProcessingTime   prometheus.Histogram
+	OutputDirFreeBytes   prometheus.Gauge
+	ActiveParsers        prometheus.Gauge
+	PollsTotal           prometheus.Counter
+	PollsWithData        prometheus.Counter
+	PollsEmpty           prometheus.Counter
+	BackoffTotal         prometheus.Counter
+	BackoffActive        prometheus.Gauge
+	InFlightOutputBytes  prometheus.Gauge
+	OutputFilesDeleted   prometheus.Counter
+	OutputBackupsDeleted prometheus.Counter
+	inFlightOutputBytes  int64 // atomic counter for in-flight output size tracking
 }
 
 // New creates and registers all metrics. It returns a singleton instance.
@@ -45,6 +48,10 @@ func New() *Metrics {
 			BlobsFailed: promauto.NewCounter(prometheus.CounterOpts{
 				Name: "adda_blobs_failed_total",
 				Help: "Total number of failed blob processing attempts",
+			}),
+			BlobsDeleted: promauto.NewCounter(prometheus.CounterOpts{
+				Name: "adda_blobs_deleted_total",
+				Help: "Total number of blobs deleted after processing",
 			}),
 			ProcessedBytes: promauto.NewCounter(prometheus.CounterOpts{
 				Name: "adda_processed_bytes_total",
@@ -90,6 +97,14 @@ func New() *Metrics {
 			InFlightOutputBytes: promauto.NewGauge(prometheus.GaugeOpts{
 				Name: "adda_in_flight_output_bytes",
 				Help: "Estimated bytes of output currently being processed (in-flight)",
+			}),
+			OutputFilesDeleted: promauto.NewCounter(prometheus.CounterOpts{
+				Name: "adda_output_files_deleted_total",
+				Help: "Total number of output files deleted after delay",
+			}),
+			OutputBackupsDeleted: promauto.NewCounter(prometheus.CounterOpts{
+				Name: "adda_output_backups_deleted_total",
+				Help: "Total number of rotated backup files deleted",
 			}),
 		}
 	})
@@ -172,4 +187,19 @@ func (m *Metrics) SubtractInFlightOutputBytes(bytes int64) int64 {
 // GetInFlightOutputBytes returns the current in-flight output size.
 func (m *Metrics) GetInFlightOutputBytes() int64 {
 	return atomic.LoadInt64(&m.inFlightOutputBytes)
+}
+
+// RecordBlobDeleted increments the blob deleted counter.
+func (m *Metrics) RecordBlobDeleted() {
+	m.BlobsDeleted.Inc()
+}
+
+// RecordOutputFileDeleted increments the output file deleted counter.
+func (m *Metrics) RecordOutputFileDeleted() {
+	m.OutputFilesDeleted.Inc()
+}
+
+// RecordOutputBackupsDeleted adds to the output backups deleted counter.
+func (m *Metrics) RecordOutputBackupsDeleted(count int) {
+	m.OutputBackupsDeleted.Add(float64(count))
 }

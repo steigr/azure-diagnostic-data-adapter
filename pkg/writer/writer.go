@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/steigr/azure-diagnostic-data-adapter/pkg/metrics"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -238,6 +239,7 @@ type MultiWriter struct {
 	pendingDeletions map[string]*pendingDeletion
 	mu               sync.RWMutex
 	logger           *slog.Logger
+	metrics          *metrics.Metrics
 }
 
 // NewMultiWriter creates a new MultiWriter with the given base configuration.
@@ -253,6 +255,11 @@ func NewMultiWriter(cfg Config) *MultiWriter {
 // SetLogger sets the logger for the MultiWriter.
 func (m *MultiWriter) SetLogger(logger *slog.Logger) {
 	m.logger = logger
+}
+
+// SetMetrics sets the metrics for the MultiWriter.
+func (m *MultiWriter) SetMetrics(metrics *metrics.Metrics) {
+	m.metrics = metrics
 }
 
 // GenerateSourceHash generates a short hash from source information.
@@ -405,14 +412,21 @@ func (m *MultiWriter) executeDelete(hash, filename string) {
 		}
 	} else {
 		mainDeleted = true
+		if m.metrics != nil {
+			m.metrics.RecordOutputFileDeleted()
+		}
 	}
 
 	// Delete rotated backup files (e.g., output_abc12345-2026-01-14T10-30-00.000.ndjson)
 	// Lumberjack creates backups with timestamp suffix before the extension
 	backupsDeleted := m.deleteRotatedFiles(filename)
 
+	if backupsDeleted > 0 && m.metrics != nil {
+		m.metrics.RecordOutputBackupsDeleted(backupsDeleted)
+	}
+
 	if mainDeleted || backupsDeleted > 0 {
-		m.logger.Debug("deleted output file after delay",
+		m.logger.Info("deleted output file after delay",
 			"filename", filename,
 			"hash", hash,
 			"backups_deleted", backupsDeleted,
