@@ -230,6 +230,7 @@ func setupLogger(cfg *config.Config) *slog.Logger {
 	} else {
 		handler = slog.NewTextHandler(os.Stdout, opts)
 	}
-
-	return slog.New(handler)
+	logger := slog.New(handler)
+	logger.Log(context.TODO(), level, "logger initialized", "level", cfg.Logging.Level, "format", cfg.Logging.Format)
+	return logger
 }
