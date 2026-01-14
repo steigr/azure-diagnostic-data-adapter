@@ -52,13 +52,21 @@ type Config struct {
 }
 
 // New creates a new Writer with the given configuration.
-// If MaxSize is 0, file rotation is disabled (files grow indefinitely).
-// If MaxBackups is 0, old files are not removed based on count.
-// If MaxAge is 0, old files are not removed based on age.
+// Note: lumberjack library behavior:
+// - If MaxSize is 0, we set a default of 16 MiB for reasonable rotation
+// - If MaxBackups is 0, old files are not removed based on count (keeps all)
+// - If MaxAge is 0, old files are not removed based on age
+// When using delete_delay, rotated files are automatically cleaned up.
 func New(cfg Config) *Writer {
+	// If MaxSize is 0, set a reasonable default for rotation
+	maxSize := cfg.MaxSize
+	if maxSize == 0 {
+		maxSize = 16 // 16 MiB default
+	}
+
 	logger := &lumberjack.Logger{
 		Filename:   cfg.Filename,
-		MaxSize:    cfg.MaxSize,    // 0 means no size-based rotation
+		MaxSize:    maxSize,
 		MaxBackups: cfg.MaxBackups, // 0 means keep all old files
 		MaxAge:     cfg.MaxAge,     // 0 means don't remove old files based on age
 	}
@@ -370,7 +378,7 @@ func (m *MultiWriter) scheduleDelete(info SourceInfo) {
 	}
 }
 
-// executeDelete performs the actual file deletion.
+// executeDelete performs the actual file deletion, including any rotated backup files.
 func (m *MultiWriter) executeDelete(hash, filename string) {
 	m.mu.Lock()
 
@@ -385,7 +393,8 @@ func (m *MultiWriter) executeDelete(hash, filename string) {
 
 	m.mu.Unlock()
 
-	// Delete the file
+	// Delete the main file
+	mainDeleted := false
 	if err := os.Remove(filename); err != nil {
 		if !os.IsNotExist(err) {
 			m.logger.Error("failed to delete output file",
@@ -395,11 +404,55 @@ func (m *MultiWriter) executeDelete(hash, filename string) {
 			)
 		}
 	} else {
+		mainDeleted = true
+	}
+
+	// Delete rotated backup files (e.g., output_abc12345-2026-01-14T10-30-00.000.ndjson)
+	// Lumberjack creates backups with timestamp suffix before the extension
+	backupsDeleted := m.deleteRotatedFiles(filename)
+
+	if mainDeleted || backupsDeleted > 0 {
 		m.logger.Debug("deleted output file after delay",
 			"filename", filename,
 			"hash", hash,
+			"backups_deleted", backupsDeleted,
 		)
 	}
+}
+
+// deleteRotatedFiles deletes any rotated backup files matching the base filename pattern.
+// Lumberjack names backups like: filename-timestamp.ext (e.g., output-2026-01-14T10-30-00.000.ndjson)
+func (m *MultiWriter) deleteRotatedFiles(filename string) int {
+	ext := filepath.Ext(filename)
+	base := strings.TrimSuffix(filename, ext)
+
+	// Pattern: base-*.ext (matches lumberjack's backup naming convention)
+	pattern := base + "-*" + ext
+
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		m.logger.Error("failed to glob for rotated files",
+			"pattern", pattern,
+			"error", err,
+		)
+		return 0
+	}
+
+	deleted := 0
+	for _, match := range matches {
+		if err := os.Remove(match); err != nil {
+			if !os.IsNotExist(err) {
+				m.logger.Error("failed to delete rotated backup file",
+					"filename", match,
+					"error", err,
+				)
+			}
+		} else {
+			deleted++
+		}
+	}
+
+	return deleted
 }
 
 // Write writes a single record (uses default writer - for backwards compatibility).

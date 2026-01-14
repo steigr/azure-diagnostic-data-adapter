@@ -46,13 +46,19 @@ output:
   # e.g., diagnostics_abc12345.ndjson
   filename: "diagnostics.ndjson"
   
-  # Max file size in MiB before rotation (default: 0 = disabled)
+  # Max file size in MiB before rotation (default: 0 = 16 MiB)
+  # Files are rotated when they reach this size.
+  # When using delete_delay, both the main file and any rotated backups
+  # are automatically deleted after the delay.
   max_size: 0
 
-  # Max number of backup files to keep (default: 0 = keep all)
+  # Max number of backup files to keep (default: 0 = keep all until delete_delay)
+  # When delete_delay is set, this is typically not needed as delete_delay
+  # will clean up all files (main + backups) after the configured delay.
   max_backups: 0
 
-  # Max age in days for backup files (default: 0 = keep forever)
+  # Max age in days for backup files (default: 0 = keep forever until delete_delay)
+  # When delete_delay is set, this is typically not needed.
   max_age: 0
 
   # Enable gzip compression for output (default: false)
@@ -60,7 +66,9 @@ output:
   gzip: false
 
   # Delay before deleting output files (default: 1m, 0s = disabled)
-  # After this delay, the output file will be automatically deleted
+  # After this delay, both the main output file and any rotated backup files
+  # will be automatically deleted. This gives log collectors time to read
+  # and ship the files before they are removed.
   delete_delay: 1m
 
 parsers:
