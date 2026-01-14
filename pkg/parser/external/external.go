@@ -194,19 +194,48 @@ func (p *Parser) ParseWithContext(input io.Reader, parseCtx parser.ParseContext)
 		cmd.Stdin = input
 	}
 
-	// Always capture stderr separately to avoid mixing with stdout
-	cmd.Stderr = &stderrBuf
+	// Set up stderr pipe for real-time logging
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
 
 	if p.stdout {
 		// Capture stdout for parser output
 		cmd.Stdout = &outputBuf
 	}
 
-	// Run the command
-	err = cmd.Run()
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start external command: %w", err)
+	}
 
-	// Log stderr output line by line (regardless of success/failure)
-	p.logStderr(&stderrBuf, command)
+	// Read stderr in real-time in a separate goroutine
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			// Log immediately
+			if line != "" {
+				p.logger.Debug("external parser stderr",
+					"parser", p.ID(),
+					"command", command,
+					"message", line,
+				)
+			}
+			// Also buffer for error reporting
+			stderrBuf.WriteString(line)
+			stderrBuf.WriteString("\n")
+		}
+	}()
+
+	// Wait for stderr goroutine to complete
+	<-stderrDone
+
+	// Wait for command to finish
+	err = cmd.Wait()
 
 	if err != nil {
 		stderrStr := strings.TrimSpace(stderrBuf.String())
@@ -315,25 +344,6 @@ func resolveGlob(pattern string) (string, error) {
 
 	// Return the first match
 	return matches[0], nil
-}
-
-// logStderr logs each line of stderr output from an external command.
-func (p *Parser) logStderr(stderrBuf *bytes.Buffer, command string) {
-	if stderrBuf.Len() == 0 {
-		return
-	}
-
-	scanner := bufio.NewScanner(stderrBuf)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line != "" {
-			p.logger.Debug("external parser stderr",
-				"parser", p.ID(),
-				"command", command,
-				"message", line,
-			)
-		}
-	}
 }
 
 // parseNDJSON parses NDJSON formatted data (one JSON object per line).
