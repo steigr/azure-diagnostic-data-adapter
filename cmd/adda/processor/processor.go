@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -139,6 +141,29 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Process
 	if err := cfg.EnsureOutputDir(); err != nil {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
+
+	// Check if output directory is writable
+	if err := checkDirectoryWritable(cfg.Output.Directory, "output"); err != nil {
+		return nil, err
+	}
+
+	// Check if temp directory is writable
+	tempDir := cfg.Processing.TempDir
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create temp directory %s: %w", tempDir, err)
+	}
+	if err := checkDirectoryWritable(tempDir, "temp"); err != nil {
+		return nil, err
+	}
+
+	logger.Debug("directory checks passed",
+		"output_dir", cfg.Output.Directory,
+		"temp_dir", tempDir,
+	)
+
 	w := writer.NewMultiWriter(cfg.GetWriterConfig())
 	w.SetLogger(logger)
 
@@ -767,4 +792,19 @@ func (p *Processor) processBlob(ctx context.Context, blob reader.BlobInfo, rdr *
 // Close closes the processor and releases resources.
 func (p *Processor) Close() error {
 	return p.writer.Close()
+}
+
+// checkDirectoryWritable verifies that a directory exists and is writable
+// by creating and immediately removing a temporary file.
+func checkDirectoryWritable(dir string, dirType string) error {
+	testFile := filepath.Join(dir, ".adda-write-test")
+	f, err := os.Create(testFile)
+	if err != nil {
+		return fmt.Errorf("%s directory %s is not writable: %w", dirType, dir, err)
+	}
+	_ = f.Close()
+	if err := os.Remove(testFile); err != nil {
+		return fmt.Errorf("failed to remove test file in %s directory %s: %w", dirType, dir, err)
+	}
+	return nil
 }
